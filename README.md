@@ -11,7 +11,7 @@
 |---|---|
 | 重型架构（Oracle/SQL Server + B/S + 多服务） | 单机轻量（标准库 `sqlite3` 单文件数据库） |
 | 部署复杂、需要服务器 | Python 脚本 / 单 exe 即开即用 |
-| 通用行业方案 | 围绕视觉检测产线（Cognex In-Sight）定制 |
+| 通用行业方案 | 围绕视觉检测产线（智能相机 + GigE 工业相机）定制 |
 
 适合**小型产线 / 试产线 / 实验线**：没有 IT 部门支持时，一台电脑 + 几台相机即可跑起来。
 
@@ -19,8 +19,11 @@
 
 ### 数据采集（源自 CameraCellMonitor）
 
-- **多相机接入**：同时连接多台 Cognex In-Sight 相机（CogSocket `ws://<相机IP>:<端口>/ws`，固件 22.2+ 默认端口 80，6.x+ 为 8087），单相机掉线自动重连不影响其他相机
-- **多单元格订阅**：每相机可配置多个电子表格单元格（测量值、分数、判定结果等），支持按结果事件（`resultChanged`）触发或定时轮询（`poll_interval`）
+- **两类相机接入**：
+  - **智能相机**：Cognex In-Sight（CogSocket `ws://<相机IP>:<端口>/ws`，固件 22.2+ 默认端口 80，6.x+ 为 8087），相机在机端完成检测，软件采集其单元格结果
+  - **GigE 工业相机**：支持 GigE Vision / GenICam 标准的工业面阵相机，软件取像后结合检测算法 / 判定逻辑产出结果，适合需要自主成像与检测的场景
+- **多相机并发**：可同时连接 / 混用多台智能相机与 GigE 工业相机，单相机掉线自动重连，不影响其他相机
+- **多单元格订阅**：智能相机每台可配置多个电子表格单元格（测量值、分数、判定结果等），支持按结果事件（`resultChanged`）触发或定时轮询（`poll_interval`）
 - **单元格数据类型**：`auto / int / float / string / bool / other`，未知类型可用 `auto`（按值推断）
 - **阈值判定**：advanced 记录模式 + 数值类型时按上下限判定 OK/NG；simple 模式仅记录数据、不判定
 
@@ -39,7 +42,8 @@
 |---|---|
 | 语言/环境 | Python 3.13，尽量只用轻量依赖 |
 | 包管理 | [uv](https://github.com/astral-sh/uv)（`pyproject.toml` + `uv.lock`） |
-| 相机通信 | CogSocket WebSocket（JSON-RPC：GET/POST/PUT/DELETE + 事件订阅），参考 `reference/CogSocket&WebApi.md` |
+| 智能相机通信 | CogSocket WebSocket（JSON-RPC：GET/POST/PUT/DELETE + 事件订阅），参考 `reference/CogSocket&WebApi.md` |
+| GigE 工业相机 | GigE Vision / GenICam 取像（帧回调触发采样与判定） |
 | 数据存储 | 标准库 `sqlite3` 单文件数据库（WAL 模式，支持多表并发写入） |
 | 报表 | `openpyxl`（xlsx） |
 | 图表 | `matplotlib`（中文字体从 `assets/*.ttf` 加载） |
@@ -60,12 +64,14 @@
 
 ## 采样机制
 
-单元格取值时机由 `sample_mode` 决定：
+**智能相机**（Cognex In-Sight）的单元格取值时机由 `sample_mode` 决定：
 
 | 模式 | 触发方式 | 说明 |
 |---|---|---|
 | `event` | 相机 `resultChanged` 事件 | 订阅 `{sid}/resultChanged`，相机每次检测产出新 `HmiResult` 后回调提取单元格值并落库；处理完毕调用 `ready()` 应答，相机才继续下一帧（背压控制） |
 | `poll` | 软件定时轮询 | 每隔 `poll_interval` 秒调用 `queryCellResults` 拉取单元格当前值 |
+
+**GigE 工业相机**由软件端取像：相机帧回调 → 触发采样与判定逻辑 → 结果落库（OK/NG 判定在软件内完成，阈值配置与智能相机共用一套）。
 
 ## 目录
 
