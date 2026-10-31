@@ -1,50 +1,71 @@
-# CameraCellMonitor — Cognex In-Sight 单元格数据监控器
+# CameraTinyMES — 迷你 MES 系统
 
-通过 **CogSocket API（WebSocket / JSON-RPC）** 订阅 Cognex In-Sight 智能相机电子表格的指定单元格，持续采集检测数据并落库，用于**计算数据波动情况、调试生产用视觉判断阈值**。
+基于 Python 的**迷你 MES（制造执行系统）**：只依赖 `sqlite3` 等轻量库，即可在产线现场实现 MES 的核心功能——**数据采集、生产追溯、质量判定与统计报表**。
 
-> 隶属于 [CameraViewerTauri](https://github.com/JustSmartAuto/CameraViewerTauri) 仓库的 `cell-monitor` 分支。
+> 本工程从 [CameraCellMonitor](https://github.com/JustSmartAuto/CameraViewerTauri)（Cognex In-Sight 单元格数据监控器）派生而来，复用其相机数据采集底座，在其上扩展 MES 功能。
 > 界面与交互参考 `显示软件=20260321`（CameraHelper，WinForms 多相机宫格显示软件）。
 
-## 功能目标
+## 项目定位
 
-- **多相机接入**：同时连接多台 In-Sight 相机（CogSocket `ws://<相机IP>:<端口>/ws`，固件 22.2+ 默认端口 80，6.x+ 为 8087），单相机掉线自动重连不影响其他相机
-- **多单元格订阅**：每相机可配置多个电子表格单元格（如测量值、分数、判定结果），支持按结果事件触发采样或按固定周期轮询
-- **单元格数据类型**：支持 `auto / int / float / string / bool / other`，设置时类型未知可用 `auto`（运行时按值推断）；上下限阈值**仅对数值类型（int/float/auto）生效**
-- **记录模式**：
-  - **simple（简单记录）**：仅记录单元格数据，不做阈值判定，判定结果恒为 NULL，适合单纯采集数据的场景
-  - **advanced（高级记录）**：记录数据并按上下限阈值判定 OK/NG，适合调试视觉判断阈值
-- **交互式单元格配置**：表格化编辑器（增删改 + 上下移），单单元格表单中上下限输入框会根据数据类型与记录模式自动启用/禁用；同时保留 CSV 文本批量编辑（兼容旧格式）
-- **双路落库**：
-  - **xlsx 导出**：按 相机/日期/单元格 生成工作表，便于人工查阅与报表
-  - **SQLite3**：增量写入所有采样点（时间戳、相机、单元格、值、OK/NG），便于 SQL 统计波动（均值/标准差/CPK/超差率）
-- **可视化**：折线图、散点图、趋势图（虚线基线 = 参考值/阈值，红色段 = 超差），**中文字体内嵌 `assets/`**（matplotlib 直接加载 TTF，避免图表标题/图例乱码）
-- **导出文件带时间戳**：所有导出文件（xlsx 报表、图表图片、数据备份等）文件名均追加时间戳后缀（`_yyyyMMdd_HHmmss`），便于区分多次导出的版本，避免覆盖
-- **默认数据目录**：应用数据默认存放于 `D:/JustSmart/CameraCellMonitor`（如 D 盘不存在或无权限则回退 `~/AppData/CameraCellMonitor`），启动时自动递归创建目录（含 xlsx/图表/数据库子目录）
-- **阈值调试辅助**：基于历史数据回放 + 超差率统计，辅助调整视觉判断阈值上下限
-- **菜单栏**：帮助 → 使用说明 / 关于（含版本号）
+| 传统 MES | CameraTinyMES |
+|---|---|
+| 重型架构（Oracle/SQL Server + B/S + 多服务） | 单机轻量（标准库 `sqlite3` 单文件数据库） |
+| 部署复杂、需要服务器 | Python 脚本 / 单 exe 即开即用 |
+| 通用行业方案 | 围绕视觉检测产线（Cognex In-Sight）定制 |
+
+适合**小型产线 / 试产线 / 实验线**：没有 IT 部门支持时，一台电脑 + 几台相机即可跑起来。
+
+## 功能
+
+### 数据采集（源自 CameraCellMonitor）
+
+- **多相机接入**：同时连接多台 Cognex In-Sight 相机（CogSocket `ws://<相机IP>:<端口>/ws`，固件 22.2+ 默认端口 80，6.x+ 为 8087），单相机掉线自动重连不影响其他相机
+- **多单元格订阅**：每相机可配置多个电子表格单元格（测量值、分数、判定结果等），支持按结果事件（`resultChanged`）触发或定时轮询（`poll_interval`）
+- **单元格数据类型**：`auto / int / float / string / bool / other`，未知类型可用 `auto`（按值推断）
+- **阈值判定**：advanced 记录模式 + 数值类型时按上下限判定 OK/NG；simple 模式仅记录数据、不判定
+
+### MES 功能（本项目新增）
+
+- **产品追溯**：以工件 / 批次号为主线，串联 检测时间、相机、单元格数据与 OK/NG 判定，可按件 / 按批查询完整检测记录
+- **生产记录**：班次 / 工单 / 产品型号维度的产量统计（总数 / OK 数 / NG 数 / 直通率）
+- **质量看板**：按时间、产品、 相机等多维度统计良率、超差率、CPK 等指标
+- **NG 分析**：NG 明细查询与导出（xlsx + CSV），辅助根本原因分析
+- **报表导出**：xlsx 报表按 相机/日期/单元格 生成工作表，所有导出文件名自动追加时间戳（`_yyyyMMdd_HHmmss`）防覆盖
+- **可视化**：折线 / 散点 / 趋势图（虚线基线 = 参考值/阈值，红色段 = 超差），中文字体内嵌 `assets/`，不依赖系统字体
 
 ## 技术要点
 
 | 项 | 方案 |
 |---|---|
-| 语言/环境 | Python 3.13 |
+| 语言/环境 | Python 3.13，尽量只用轻量依赖 |
 | 包管理 | [uv](https://github.com/astral-sh/uv)（`pyproject.toml` + `uv.lock`） |
 | 相机通信 | CogSocket WebSocket（JSON-RPC：GET/POST/PUT/DELETE + 事件订阅），参考 `reference/CogSocket&WebApi.md` |
-| 数据存储 | `openpyxl`（xlsx）+ 标准库 `sqlite3` |
-| 图表 | `matplotlib`（中文字体从 `assets/*.ttf` 加载，不依赖系统字体） |
-| 界面 | tkinter / Web（参照 CameraHelper 的多相机宫格交互） |
-| 打包 | PyInstaller 单文件 exe，命名 `exe_{yyyyMMddHHmmss}`（如 `exe_20261031113000`），logo 使用 `assets/app_icon.ico`（`--icon` + `--add-data assets`） |
+| 数据存储 | 标准库 `sqlite3` 单文件数据库（WAL 模式，支持多表并发写入） |
+| 报表 | `openpyxl`（xlsx） |
+| 图表 | `matplotlib`（中文字体从 `assets/*.ttf` 加载） |
+| 界面 | tkinter（多相机宫格布局，参照 CameraHelper） |
+| 打包 | PyInstaller 单文件 exe，命名 `exe_{yyyyMMddHHmmss}`，logo 使用 `assets/app_icon.ico` |
 
-## 采样机制（何时取单元格的值）
+## 数据模型（SQLite）
 
-单元格取值时机由其 `sample_mode` 决定：
+| 表 | 说明 |
+|---|---|
+| `products` | 产品型号 / 配方 |
+| `work_orders` | 工单（型号、计划数量、状态） |
+| `records` | 采样记录：时间戳、相机、单元格、值、OK/NG、工单/批次关联 |
+| `cameras` / `cells` | 相机与单元格配置 |
+| 其他 | NG 明细、班次、操作日志等按需扩展 |
+
+> 具体表结构以 `src/` 实际代码为准。
+
+## 采样机制
+
+单元格取值时机由 `sample_mode` 决定：
 
 | 模式 | 触发方式 | 说明 |
 |---|---|---|
-| `event` | 相机 `resultChanged` 事件 | 订阅 `{sid}/resultChanged`，每当相机完成一次检测并产出新的 `HmiResult` 时，回调 `on_result` 调用 `parse_cells()` 提取配置单元格的值并落库；处理完毕后调用 `ready()` 应答，相机才继续下一帧（背压控制） |
-| `poll` | 软件定时轮询 | 每隔 `poll_interval` 秒主动调用 `queryCellResults` 拉取指定单元格的当前值 |
-
-阈值判定（OK/NG）仅在 **advanced 记录模式 + 数值类型（int/float/auto）** 时进行；simple 模式或非数值类型的单元格判定结果恒为 NULL，但数据照常落库。
+| `event` | 相机 `resultChanged` 事件 | 订阅 `{sid}/resultChanged`，相机每次检测产出新 `HmiResult` 后回调提取单元格值并落库；处理完毕调用 `ready()` 应答，相机才继续下一帧（背压控制） |
+| `poll` | 软件定时轮询 | 每隔 `poll_interval` 秒调用 `queryCellResults` 拉取单元格当前值 |
 
 ## 目录
 
@@ -52,20 +73,17 @@
 |---|---|
 | `reference/CogSocket&WebApi.md` | CogSocket & HMI/Platform Web API 参考（连接、单元格读写、事件订阅） |
 | `reference/Cognex In-Sight 3D 相机电子表格函数参考（整理版）.md` | 电子表格函数参考 |
-| `reference/相机数据监控器_web_2610171547.py` | 参考实现：S7 PLC 相机坐标监控器（tkinter + 内嵌 Web），可复用其 Web/配方/趋势图交互 |
-| `assets/app_icon.ico` | 应用图标（由 `monitor.jpg` 拉伸方形 + 16% 圆角生成） |
-| `assets/monitor.jpg` / `monitor.png` | 图标源图 |
+| `reference/相机数据监控器_web_2610171547.py` | 派生来源参考实现（tkinter + 内嵌 Web） |
+| `assets/mes.jpg` | 主界面截图 |
 
 ## 开发 / 运行
 
 ```bash
 uv sync                              # 安装依赖
-uv run cell-monitor                  # 启动应用
-uv run cell-monitor --simulate       # 启动内置模拟相机离线体验完整流程
+uv run mes                           # 启动应用
+uv run mes --simulate                # 启动内置模拟相机离线体验完整流程
 uv run python build_exe.py           # PyInstaller 打包 dist/exe_{yyyyMMddHHmmss}.exe
 ```
-
-源码结构：`src/cellmonitor/`（`cogsocket` 通信、`worker` 采集调度、`storage` 落库、`stats` 统计、`charts` 图表、`ui` tkinter 宫格界面、`simulator` 模拟相机）。
 
 ## License
 
