@@ -1,5 +1,9 @@
 # CameraTinyMES — 迷你 MES 系统
 
+<p align="center">
+  <img src="assets/app_icon_preview.png" alt="CameraTinyMES" width="128" />
+</p>
+
 基于 Python 的**迷你 MES（制造执行系统）**：只依赖 `sqlite3` 等轻量库，即可在产线现场实现 MES 的核心功能——**数据采集、生产追溯、质量判定与统计报表**。
 
 > 本工程从 [CameraCellMonitor](https://github.com/JustSmartAuto/CameraViewerTauri)（Cognex In-Sight 单元格数据监控器）派生而来，复用其相机数据采集底座，在其上扩展 MES 功能。
