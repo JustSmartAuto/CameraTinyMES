@@ -179,7 +179,7 @@ class MonitorApp:
         self.panels: dict[str, CameraPanel] = {}
 
         self.root = tk.Tk()
-        self.root.title("CameraTinyMES — Cognex In-Sight 单元格数据监控器")
+        self.root.title("CameraTinyMES — Cognex In-Sight 迷你制造执行系统")
         self.root.geometry("1100x700")
         self.root.minsize(1060, 600)
         theme.apply(self.root)
@@ -268,7 +268,7 @@ class MonitorApp:
         text = (
             "CameraTinyMES\n"
             f"版本 {__version__}\n\n"
-            "Cognex In-Sight 单元格数据监控器\n"
+            "Cognex In-Sight 迷你制造执行系统\n"
             "（CogSocket 订阅 + SQLite/xlsx 落库 + 趋势图表）\n\n"
             "隶属于 CameraViewerTauri 仓库的 cell-monitor 分支。"
         )
