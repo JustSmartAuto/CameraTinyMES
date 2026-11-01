@@ -16,7 +16,7 @@ dev = [
 ]
 
 [project.scripts]
-cell-monitor = "cellmonitor.app:main"
+camera-tiny-mes = "cameratinymes.app:main"
 
 [build-system]
 requires = ["setuptools>=68"]

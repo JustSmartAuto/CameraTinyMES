@@ -25,7 +25,7 @@ def main() -> None:
         "--name", name,
         "--add-data", f"{ASSETS}{';'}assets",
         "--collect-all", "matplotlib",
-        str(ROOT / "src" / "cellmonitor" / "app.py"),
+        str(ROOT / "src" / "cameratinymes" / "app.py"),
     ]
     if icon.exists():
         cmd += ["--icon", str(icon)]

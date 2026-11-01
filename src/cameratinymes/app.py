@@ -1,7 +1,7 @@
 """应用入口。
 
 用法：
-    cell-monitor [--simulate] [--data-dir PATH]
+    camera-tiny-mes [<options>]
 
 --simulate：启动内置模拟相机并把其加入配置，便于离线体验完整流程。
 """
@@ -12,11 +12,11 @@ import argparse
 import logging
 from pathlib import Path
 
-from cellmonitor.config import CameraConfig, CellConfig, default_data_dir, load_config, save_config
+from cameratinymes.config import CameraConfig, CellConfig, default_data_dir, load_config, save_config
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="cell-monitor", description=__doc__)
+    parser = argparse.ArgumentParser(prog="camera-tiny-mes", description=__doc__)
     parser.add_argument("--simulate", action="store_true", help="启动模拟相机并加入配置")
     parser.add_argument("--data-dir", type=Path, default=None, help="数据目录（默认 D:/JustSmart/CameraTinyMES）")
     parser.add_argument("-v", "--verbose", action="store_true", help="调试日志")
@@ -37,7 +37,7 @@ def main(argv=None) -> None:
 
     extra_startup = []
     if args.simulate:
-        from cellmonitor.simulator import SimulatedCamera
+        from cameratinymes.simulator import SimulatedCamera
 
         sim = SimulatedCamera(port=8087)
         extra_startup.append(sim.start())
@@ -55,7 +55,7 @@ def main(argv=None) -> None:
             ))
             save_config(data_dir, cameras)
 
-    from cellmonitor.ui import MonitorApp
+    from cameratinymes.ui import MonitorApp
 
     app = MonitorApp(data_dir, cameras, extra_startup=extra_startup)
     app.run()

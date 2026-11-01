@@ -23,7 +23,7 @@ from .config import (
 from .storage import Storage, export_xlsx, timestamp_suffix
 from .worker import Monitor
 
-from cellmonitor import __version__
+from cameratinymes import __version__
 
 log = logging.getLogger(__name__)
 
