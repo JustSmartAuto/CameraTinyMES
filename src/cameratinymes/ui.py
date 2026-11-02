@@ -150,6 +150,7 @@ class CameraPanel(tk.Frame):
         theme.beos_button(btns, "断开", lambda: self.app.disconnect_camera(cfg.name)).pack(side="left", padx=3)
         theme.beos_button(btns, "趋势图", lambda: self.app.show_chart(cfg)).pack(side="left", padx=3)
         theme.beos_button(btns, "导出xlsx", lambda: self.app.export_camera(cfg)).pack(side="left", padx=3)
+        theme.beos_button(btns, "编辑", lambda: self.app.edit_camera_cells(cfg)).pack(side="left", padx=3)
 
     def set_status(self, status: str, detail: str = "") -> None:
         self.status = status
@@ -247,16 +248,21 @@ class MonitorApp:
             "CameraTinyMES 使用说明\n\n"
             "1. 添加相机：点击「添加相机」，输入名称、IP、端口\n"
             "   （固件 22.2+ 默认 80，6.x+ 默认 8087）。\n"
-            "2. 配置单元格：点击「配置单元格」打开交互式表格编辑器：\n"
+            "2. 配置单元格：点击工具栏「配置单元格」下拉选择相机，\n"
+            "   或点击相机面板上的「编辑」按钮直接打开编辑器：\n"
             "   - 添加/编辑/删除单元格，可上移下移调整顺序\n"
-            "   - 数据类型：auto（未知·运行时推断）/ int / float / string / bool / other\n"
-            "   - 记录模式：simple（仅记录·不判定）/ advanced（记录+阈值判定）\n"
+            "   - 数据类型：auto（未知·运行时推断）/ int / float / string / bool / image / other\n"
+            "   - 记录模式：simple（仅记录·不判定，默认）/ advanced（记录+阈值判定）\n"
             "   - 上下限仅在 advanced + 数值类型 时生效；simple 模式恒为 NULL\n"
             "   - 也可点「文本编辑」用 CSV 格式批量编辑（含回退兼容旧格式）\n"
+            "   - 点「取消」放弃修改，不影响现有配置\n"
             "3. 连接：点击相机面板上的「连接」或工具栏「连接全部」。\n"
-            "4. 趋势图：点击「趋势图」选择单元格，查看历史数据折线图\n"
-            "   （红色段 = 超差，虚线 = 阈值基线）。\n"
-            "5. 导出：点击「导出xlsx」按相机生成报表。\n\n"
+            "4. 趋势图：点击「趋势图」，文本框输入或勾选单元格（可多选批量绘图），\n"
+            "   查看历史数据折线图（红色段 = 超差，虚线 = 阈值基线）。\n"
+            "5. 导出：点击相机面板「导出xlsx」按相机生成报表。\n"
+            "6. 数据菜单：\n"
+            "   - 删除相机数据：选择相机并勾选单元格（不勾选则删全部），删除历史数据\n"
+            "   - 导出：按相机 + 单元格 + 时间范围选择性导出 xlsx\n\n"
             "数据目录：" + str(self.data_dir) + "\n"
             "  ├─ db/    SQLite 数据库（所有采样点）\n"
             "  ├─ xlsx/  导出的报表\n"
@@ -270,11 +276,17 @@ class MonitorApp:
             f"版本 {__version__}\n\n"
             "Cognex In-Sight 迷你制造执行系统\n"
             "（CogSocket 订阅 + SQLite/xlsx 落库 + 趋势图表）\n\n"
-            "隶属于 CameraViewerTauri 仓库的 cell-monitor 分支。"
+            "开源协议：MIT\n"
+            "仓库：https://github.com/JustSmartAuto/CameraTinyMES"
         )
         messagebox.showinfo("关于", text)
 
     def _rebuild_grid(self) -> None:
+        # 重建前快照各相机的连接状态与最新值，避免编辑配置后其他相机误显示为离线
+        saved: dict[str, tuple[str, dict[str, str]]] = {}
+        for name, panel in self.panels.items():
+            values = {cell: tip.text for cell, tip in panel._value_tips.items() if tip.text}
+            saved[name] = (panel.status, values)
         for child in self.grid_frame.winfo_children():
             child.destroy()
         self.panels.clear()
@@ -284,6 +296,13 @@ class MonitorApp:
             panel = CameraPanel(self.grid_frame, self, cfg)
             panel.grid(row=i // cols, column=i % cols, sticky="nsew", padx=5, pady=5)
             self.panels[cfg.name] = panel
+            if cfg.name in saved:
+                status, values = saved[cfg.name]
+                if status != "offline":
+                    panel.set_status(status)
+                for cell, text in values.items():
+                    if cell in panel.value_labels:
+                        panel.set_value(cell, text)
         for c in range(cols):
             self.grid_frame.columnconfigure(c, weight=1, uniform="camcol")
         self.grid_canvas.yview_moveto(0)
@@ -382,7 +401,7 @@ class MonitorApp:
                                        initialvalue=80, parent=self.root)
         if not port:
             return
-        cells = self._ask_cells()
+        cells = self._ask_cells() or []  # 取消视为暂不配置单元格，可后续再编辑
         cfg = CameraConfig(name=name, host=host, port=port, cells=cells)
         self.cameras.append(cfg)
         save_config(self.data_dir, self.cameras)
@@ -401,15 +420,22 @@ class MonitorApp:
         if not cfg:
             messagebox.showerror("错误", f"未找到相机 {name}")
             return
-        cfg.cells = self._ask_cells(cfg.cells)
+        self.edit_camera_cells(cfg)
+
+    def edit_camera_cells(self, cfg: CameraConfig) -> None:
+        """直接打开指定相机的单元格编辑器并保存；取消则不改动现有配置。"""
+        cells = self._ask_cells(cfg.cells)
+        if cells is None:
+            return
+        cfg.cells = cells
         save_config(self.data_dir, self.cameras)
         self._rebuild_grid()
 
-    def _ask_cells(self, current: list[CellConfig] | None = None) -> list[CellConfig]:
-        """打开交互式单元格编辑器（表格 + 表单），可回退到文本编辑。"""
+    def _ask_cells(self, current: list[CellConfig] | None = None) -> list[CellConfig] | None:
+        """打开交互式单元格编辑器（表格 + 表单），可回退到文本编辑。取消返回 None。"""
         cells = [CellConfig(**c.__dict__) for c in (current or [])]
         dlg = CellEditorDialog(self.root, cells)
-        return dlg.result or []
+        return dlg.result
 
     # ---------- 图表 / 导出 ----------
 
@@ -615,9 +641,9 @@ def _text_to_cells(text: str) -> list[CellConfig]:
             data_type = parts[1] if len(parts) > 1 and parts[1] else "auto"
             if data_type not in CELL_DATA_TYPES:
                 data_type = "auto"
-            record_mode = parts[2] if len(parts) > 2 and parts[2] else "advanced"
+            record_mode = parts[2] if len(parts) > 2 and parts[2] else "simple"
             if record_mode not in CELL_RECORD_MODES:
-                record_mode = "advanced"
+                record_mode = "simple"
             mode = parts[3] if len(parts) > 3 and parts[3] else "event"
             if mode not in ("event", "poll"):
                 mode = "event"
@@ -643,7 +669,7 @@ class CellFormDialog(tk.Toplevel):
         self.configure(bg=C["chrome"])
         theme.title_tab(self, "单元格设置")
 
-        cell = cell or CellConfig(name="")
+        cell = cell or CellConfig(name="", record_mode="simple")  # 新增单元格默认 simple 仅记录
         self._cell = CellConfig(**cell.__dict__)
 
         body = tk.Frame(self, bg=C["chrome"])
