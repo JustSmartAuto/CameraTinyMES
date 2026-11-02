@@ -19,6 +19,14 @@
 
 适合**小型产线 / 试产线 / 实验线**：没有 IT 部门支持时，一台电脑 + 几台相机即可跑起来。
 
+## 界面截图
+
+| 界面截图 | 说明 |
+|---|---|
+| ![多相机宫格主界面](assets/annotated_ui_2026-11-02_111229.png) | **多相机宫格主界面**：单元格实时值、连接状态与运行日志 |
+| ![单相机面板](assets/annotated_ui_2026-11-02_090504.png) | **单相机面板**：单元格结果与连接 / 趋势图 / 导出操作 |
+| ![单元格订阅管理](assets/annotated_ui_2026-11-02_090945.png) | **单元格订阅管理**：类型、记录模式、采样间隔与上下限 |
+
 ## 功能
 
 ### 数据采集（源自 CameraCellMonitor）
@@ -84,7 +92,8 @@
 | `reference/CogSocket&WebApi.md` | CogSocket & HMI/Platform Web API 参考（连接、单元格读写、事件订阅） |
 | `reference/Cognex In-Sight 3D 相机电子表格函数参考（整理版）.md` | 电子表格函数参考 |
 | `reference/相机数据监控器_web_2610171547.py` | 派生来源参考实现（tkinter + 内嵌 Web） |
-| `assets/mes.jpg` | 主界面截图 |
+| `assets/annotated_ui_*.png` | 界面截图（多相机宫格 / 单相机面板 / 单元格订阅） |
+| `assets/mes.jpg` | 应用 logo 原图 |
 
 ## 开发 / 运行
 
