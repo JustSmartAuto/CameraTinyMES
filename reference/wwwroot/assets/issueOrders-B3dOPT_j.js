@@ -1,0 +1,1 @@
+import{a}from"./app-vendor-C5wVSolz.js";import{u as t}from"./unwrap-D70JvITt.js";const p=async(s=1,r=10,e)=>(await a.get("/api/IssueOrders",{params:{page:s,pageSize:r,...e}})).data,u=async s=>{const r=await a.post("/api/IssueOrders",s);return t(r.data)};export{u as c,p as g};
