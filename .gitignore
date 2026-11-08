@@ -8,3 +8,7 @@ uv.lock
 *.egg-info/
 
 kimi*.md
+
+# 对标项目参考文件（二进制，不入库）
+reference/mes-local-pilot.db
+reference/mes-mysql-script.zip
