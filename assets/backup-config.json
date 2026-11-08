@@ -1,0 +1,205 @@
+{
+  "cameras": [
+    {
+      "name": "OP20-58",
+      "ip": "192.168.10.58",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP30-124LX",
+      "ip": "192.168.10.124",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP70-241",
+      "ip": "192.168.10.241",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP10-26LX",
+      "ip": "192.168.10.26",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP60-195",
+      "ip": "192.168.10.195",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP30-122",
+      "ip": "192.168.10.122",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP60-196",
+      "ip": "192.168.10.196",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP30-123",
+      "ip": "192.168.10.123",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP20-56",
+      "ip": "192.168.10.56",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP40-141",
+      "ip": "192.168.10.141",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP70-240",
+      "ip": "192.168.10.240",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP40-142",
+      "ip": "192.168.10.142",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP20-55",
+      "ip": "192.168.10.55",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP10-29",
+      "ip": "192.168.10.29",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP70-242",
+      "ip": "192.168.10.242",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP10-28",
+      "ip": "192.168.10.28",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP30-121",
+      "ip": "192.168.10.121",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP10-25",
+      "ip": "192.168.10.25",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP20-57",
+      "ip": "192.168.10.57",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    },
+    {
+      "name": "OP10-27",
+      "ip": "192.168.10.27",
+      "ftpPort": 21,
+      "ftpUsername": "admin",
+      "ftpPassword": "",
+      "backupDirectory": "D:\\JustSmart\\261028艾龙锦恒SAB自动线\\CCD作业-SAB",
+      "ftpsEnabled": true,
+      "trustAllCerts": true
+    }
+  ],
+  "defaultBackupDirectory": ""
+}

@@ -47,6 +47,7 @@
 - **NG 分析**：NG 明细查询与导出（xlsx + CSV），辅助根本原因分析
 - **报表导出**：xlsx 报表按 相机/日期/单元格 生成工作表，所有导出文件名自动追加时间戳（`_yyyyMMdd_HHmmss`）防覆盖
 - **可视化**：折线 / 散点 / 趋势图（虚线基线 = 参考值/阈值，红色段 = 超差），中文字体内嵌 `assets/`，不依赖系统字体
+- **人工复核（误判标注）**：对生产数据中的误判图片进行人工复核——在图像上绘制方框 ROI 圈出误判之处，并填写误判原因 / 注意点说明；标注结果按 **XAnyLabeling 3.3.x** 格式存储（详见下文「误判标注」），可直接用于其他视觉算法训练学习误判区分
 
 ## 技术要点
 
@@ -84,6 +85,45 @@
 | `poll` | 软件定时轮询 | 每隔 `poll_interval` 秒调用 `queryCellResults` 拉取单元格当前值 |
 
 **GigE 工业相机**由软件端取像：相机帧回调 → 触发采样与判定逻辑 → 结果落库（OK/NG 判定在软件内完成，阈值配置与智能相机共用一套）。
+
+## 误判标注（人工复核）
+
+复核流程：从生产记录中筛选误判图片 → 人工在图像上绘制方框 ROI 标记误判位置 → 填写误判原因 / 注意点 → 保存标注文件，供其他视觉算法训练学习误判区分。
+
+标注文件采用 **XAnyLabeling 3.3.x** JSON 格式，每张图片对应一个同名 `.json` 文件：
+
+- **图片数据内嵌 `imageData`**（Base64 编码），**不依赖 `imagePath`**——标注文件自包含，脱离原始图片目录仍可被训练管线直接读取
+- 方框 ROI 使用 `shape_type: "rectangle"`，`points` 为左上角 / 右下角两点的像素坐标
+- `label` 为误判类别；`description` 记录误判原因或注意点
+
+示例：
+
+```json
+{
+  "version": "3.3.6",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "misjudge_scratch",
+      "score": null,
+      "points": [[512.0, 340.0], [768.0, 512.0]],
+      "group_id": null,
+      "description": "误判原因：反光被误判为划痕；注意避免侧光角度",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "CAM01_20261108_101530.jpg",
+  "imageData": "<Base64 编码的图片数据>",
+  "imageHeight": 1944,
+  "imageWidth": 2592
+}
+```
+
+> `imagePath` 仅保留文件名作展示用途，训练读取以 `imageData` 为准。
 
 ## 目录
 
