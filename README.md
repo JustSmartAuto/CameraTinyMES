@@ -77,9 +77,19 @@
 
 ## 数据库连接（MariaDB 优先，SQLite 兜底）
 
-工控机可能已通过 `reference/mariadb_installer.py` 安装 MariaDB。软件启动时按以下顺序选择存储后端：
+工控机可能已通过 `reference/mariadb_installer.py` 安装 MariaDB（一键离线安装器，内嵌 MariaDB 13.0.2 MSI 静默安装）。安装器的固定参数即本软件的默认连接参数：
 
-1. **探测 MariaDB**：按配置的主机 / 端口 / 账号尝试连接（默认 `127.0.0.1:3306`）
+| 安装器参数 | 值 |
+|---|---|
+| 安装 / 数据目录 | `D:\JustSmart\MariaDB`（无 D 盘回退 `%APPDATA%\MariaDB`） |
+| 端口 | **8306**（非默认 3306） |
+| 服务名 | `MariaDB`（注册为 Windows 服务） |
+| 管理员账号 | `justsmart / justsmart`（`'%'` + `'localhost'`，全部权限） |
+| 网络 | `bind-address=0.0.0.0`，允许产线其他设备远程连接 |
+
+软件启动时按以下顺序选择存储后端：
+
+1. **探测 MariaDB**：按配置的主机 / 端口 / 账号尝试连接（默认 `127.0.0.1:8306`，账号 `justsmart`）
 2. **可用**：所有采样记录、图像与标注数据写入 MariaDB，支持多客户端并发访问与集中汇总
 3. **不可用**（服务未安装 / 未启动 / 连接超时 / 认证失败）：自动回退到 `sqlite3` 单文件数据库并记录日志，**保证单机最小可用性**，不因数据库缺失影响产线采集
 
@@ -88,8 +98,8 @@
 | 配置项 | 说明 | 默认值 |
 |---|---|---|
 | `db_backend` | `auto`（MariaDB 优先，回退 SQLite）/ `mariadb` / `sqlite` | `auto` |
-| `mariadb.host` / `port` | MariaDB 地址与端口 | `127.0.0.1` / `3306` |
-| `mariadb.user` / `password` | 账号与密码 | 按工控机安装时设置 |
+| `mariadb.host` / `port` | MariaDB 地址与端口 | `127.0.0.1` / `8306` |
+| `mariadb.user` / `password` | 账号与密码 | `justsmart` / `justsmart` |
 | `mariadb.database` | 数据库名（不存在则自动建库） | `camera_tiny_mes` |
 | `sqlite.path` | 回退时 SQLite 文件路径 | 数据目录下 `db/mes.db` |
 

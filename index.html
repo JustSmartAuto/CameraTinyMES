@@ -122,6 +122,7 @@
   <div class="deskbar-top"><span class="dot"></span>CameraTinyMES</div>
   <div class="deskbar-item"><a href="#readme">README — 项目说明</a></div>
   <div class="deskbar-item"><a href="#readme-feature">功能与采样机制</a></div>
+  <div class="deskbar-item"><a href="#readme-db">数据库连接（MariaDB）</a></div>
   <div class="deskbar-item"><a href="#readme-label">误判标注</a></div>
   <div class="deskbar-item"><a href="#dbreport">数据库分析报告</a></div>
   <div class="deskbar-item"><a href="#dbreport-design">设计特点分析</a></div>
@@ -191,7 +192,7 @@
       <tr><td>包管理</td><td>uv（<code>pyproject.toml</code> + <code>uv.lock</code>）</td></tr>
       <tr><td>智能相机通信</td><td>CogSocket WebSocket（JSON-RPC + 事件订阅）</td></tr>
       <tr><td>GigE 工业相机</td><td>GigE Vision / GenICam 取像（帧回调触发采样与判定）</td></tr>
-      <tr><td>数据存储</td><td>标准库 <code>sqlite3</code> 单文件数据库（WAL 模式，支持多表并发写入）</td></tr>
+      <tr><td>数据存储</td><td>优先连接 MariaDB（工控机可经 <code>reference/mariadb_installer.py</code> 安装）；连接不可用时自动回退到标准库 <code>sqlite3</code> 单文件数据库（WAL 模式），保证最小可用性</td></tr>
       <tr><td>报表</td><td><code>openpyxl</code>（xlsx）</td></tr>
       <tr><td>图表</td><td><code>matplotlib</code>（中文字体从 <code>assets/*.ttf</code> 加载）</td></tr>
       <tr><td>界面</td><td>tkinter（多相机宫格布局，参照 CameraHelper）</td></tr>
@@ -208,6 +209,32 @@
       <tr><td>其他</td><td>NG 明细、班次、操作日志等按需扩展</td></tr>
     </table>
     <blockquote>具体表结构以 <code>src/</code> 实际代码为准。</blockquote>
+
+    <h2 id="readme-db">数据库连接（MariaDB 优先，SQLite 兜底）</h2>
+    <p>工控机可能已通过 <code>reference/mariadb_installer.py</code> 安装 MariaDB（一键离线安装器，内嵌 MariaDB 13.0.2 MSI 静默安装）。安装器的固定参数即本软件的默认连接参数：</p>
+    <table>
+      <tr><th>安装器参数</th><th>值</th></tr>
+      <tr><td>安装 / 数据目录</td><td><code>D:\JustSmart\MariaDB</code>（无 D 盘回退 <code>%APPDATA%\MariaDB</code>）</td></tr>
+      <tr><td>端口</td><td><strong>8306</strong>（非默认 3306）</td></tr>
+      <tr><td>服务名</td><td><code>MariaDB</code>（注册为 Windows 服务）</td></tr>
+      <tr><td>管理员账号</td><td><code>justsmart / justsmart</code>（<code>'%'</code> + <code>'localhost'</code>，全部权限）</td></tr>
+      <tr><td>网络</td><td><code>bind-address=0.0.0.0</code>，允许产线其他设备远程连接</td></tr>
+    </table>
+    <p>软件启动时按以下顺序选择存储后端：</p>
+    <ol>
+      <li><strong>探测 MariaDB</strong>：按配置的主机 / 端口 / 账号尝试连接（默认 <code>127.0.0.1:8306</code>，账号 <code>justsmart</code>）</li>
+      <li><strong>可用</strong>：所有采样记录、图像与标注数据写入 MariaDB，支持多客户端并发访问与集中汇总</li>
+      <li><strong>不可用</strong>：自动回退到 <code>sqlite3</code> 单文件数据库并记录日志，<strong>保证单机最小可用性</strong>，不因数据库缺失影响产线采集</li>
+    </ol>
+    <p>两套后端共用同一套表结构与数据访问接口，对上层功能透明；运行中 MariaDB 断连时当前批次数据先在本地缓存，恢复后补写。</p>
+    <table>
+      <tr><th>配置项</th><th>说明</th><th>默认值</th></tr>
+      <tr><td><code>db_backend</code></td><td><code>auto</code>（MariaDB 优先，回退 SQLite）/ <code>mariadb</code> / <code>sqlite</code></td><td><code>auto</code></td></tr>
+      <tr><td><code>mariadb.host</code> / <code>port</code></td><td>MariaDB 地址与端口</td><td><code>127.0.0.1</code> / <code>8306</code></td></tr>
+      <tr><td><code>mariadb.user</code> / <code>password</code></td><td>账号与密码</td><td><code>justsmart</code> / <code>justsmart</code></td></tr>
+      <tr><td><code>mariadb.database</code></td><td>数据库名（不存在则自动建库）</td><td><code>camera_tiny_mes</code></td></tr>
+      <tr><td><code>sqlite.path</code></td><td>回退时 SQLite 文件路径</td><td>数据目录下 <code>db/mes.db</code></td></tr>
+    </table>
 
     <h2>采样机制</h2>
     <table>
