@@ -57,7 +57,7 @@
 | 包管理 | [uv](https://github.com/astral-sh/uv)（`pyproject.toml` + `uv.lock`） |
 | 智能相机通信 | CogSocket WebSocket（JSON-RPC：GET/POST/PUT/DELETE + 事件订阅），参考 `reference/CogSocket&WebApi.md` |
 | GigE 工业相机 | GigE Vision / GenICam 取像（帧回调触发采样与判定） |
-| 数据存储 | 标准库 `sqlite3` 单文件数据库（WAL 模式，支持多表并发写入） |
+| 数据存储 | 优先连接 MariaDB（工控机可经 `reference/mariadb_installer.py` 安装）；连接不可用时自动回退到标准库 `sqlite3` 单文件数据库（WAL 模式），保证最小可用性 |
 | 报表 | `openpyxl`（xlsx） |
 | 图表 | `matplotlib`（中文字体从 `assets/*.ttf` 加载） |
 | 界面 | tkinter（多相机宫格布局，参照 CameraHelper） |
@@ -74,6 +74,24 @@
 | 其他 | NG 明细、班次、操作日志等按需扩展 |
 
 > 具体表结构以 `src/` 实际代码为准。
+
+## 数据库连接（MariaDB 优先，SQLite 兜底）
+
+工控机可能已通过 `reference/mariadb_installer.py` 安装 MariaDB。软件启动时按以下顺序选择存储后端：
+
+1. **探测 MariaDB**：按配置的主机 / 端口 / 账号尝试连接（默认 `127.0.0.1:3306`）
+2. **可用**：所有采样记录、图像与标注数据写入 MariaDB，支持多客户端并发访问与集中汇总
+3. **不可用**（服务未安装 / 未启动 / 连接超时 / 认证失败）：自动回退到 `sqlite3` 单文件数据库并记录日志，**保证单机最小可用性**，不因数据库缺失影响产线采集
+
+两套后端共用同一套表结构与数据访问接口，对上层功能（追溯、看板、报表、标注）透明；运行中 MariaDB 断连时当前批次数据先在本地缓存，恢复后补写。
+
+| 配置项 | 说明 | 默认值 |
+|---|---|---|
+| `db_backend` | `auto`（MariaDB 优先，回退 SQLite）/ `mariadb` / `sqlite` | `auto` |
+| `mariadb.host` / `port` | MariaDB 地址与端口 | `127.0.0.1` / `3306` |
+| `mariadb.user` / `password` | 账号与密码 | 按工控机安装时设置 |
+| `mariadb.database` | 数据库名（不存在则自动建库） | `camera_tiny_mes` |
+| `sqlite.path` | 回退时 SQLite 文件路径 | 数据目录下 `db/mes.db` |
 
 ## 采样机制
 

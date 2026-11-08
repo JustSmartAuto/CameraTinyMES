@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CameraTinyMES — 项目文档</title>
+<link rel="stylesheet" href="assets/07-beos.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    background-image:
+      radial-gradient(circle at 20% 30%, #3c7072 0%, transparent 50%),
+      radial-gradient(circle at 80% 70%, #1d3d3e 0%, transparent 60%);
+    color: var(--ink);
+    font-family: var(--font), "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    padding: 30px;
+    min-height: 100vh;
+  }
+  .window {
+    background: var(--chrome);
+    border: 1px solid var(--chrome-darker);
+    box-shadow: 3px 3px 0 rgba(0,0,0,0.4);
+    margin: 0 auto 28px;
+    max-width: 960px;
+  }
+  .titlebar { display: flex; height: 24px; align-items: stretch; }
+  .tab {
+    background: var(--yellow);
+    border: 1px solid var(--chrome-darker);
+    border-bottom: none;
+    padding: 3px 20px;
+    display: flex; align-items: center; gap: 8px;
+    font-weight: bold; font-size: 12px;
+    position: relative;
+    box-shadow: inset 0 1px 0 #fff;
+  }
+  .tab::after {
+    content: "";
+    position: absolute; right: -10px; top: 0; bottom: -1px;
+    width: 10px; background: var(--yellow);
+    border-right: 1px solid var(--chrome-darker);
+    border-bottom: 1px solid var(--chrome-darker);
+    transform: skewX(30deg); transform-origin: bottom left;
+  }
+  .tab.teal { background: var(--teal); color: var(--chrome-lighter); box-shadow: inset 0 1px 0 rgba(255,255,255,0.4); }
+  .tab.teal::after { background: var(--teal); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red-dot); border: 1px solid var(--chrome-darker); box-shadow: inset 1px 1px 0 rgba(255,255,255,0.6); flex: none; }
+  .filler { flex: 1; background: var(--chrome); border: 1px solid var(--chrome-darker); border-bottom: none; border-left: none; }
+  .content { background: var(--chrome-lighter); border: 1px solid var(--chrome-darker); padding: 20px 24px; line-height: 1.65; }
+
+  h1 { font-size: 26px; font-weight: normal; margin-bottom: 10px; }
+  h2 {
+    font-size: 14px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--teal); margin: 22px 0 8px;
+    border-bottom: 2px solid var(--yellow); padding-bottom: 3px;
+  }
+  h3 { font-size: 13px; font-weight: bold; margin: 14px 0 6px; color: var(--chrome-darker); }
+  p { margin-bottom: 8px; }
+  ul, ol { margin: 6px 0 10px 22px; }
+  li { margin-bottom: 4px; }
+  strong { color: #8a6d00; }
+  code {
+    font-family: "Courier New", monospace; font-size: 12px;
+    background: var(--chrome-light); border: 1px solid var(--chrome-dark);
+    padding: 0 4px;
+  }
+  pre {
+    font-family: "Courier New", monospace; font-size: 12px; line-height: 1.5;
+    background: #fff; border: 1px solid var(--chrome-darker);
+    box-shadow: inset 1px 1px 0 var(--chrome-dark);
+    padding: 10px 12px; margin: 8px 0 12px; overflow-x: auto;
+  }
+  pre code { background: none; border: none; padding: 0; }
+  table {
+    border-collapse: collapse; width: 100%; margin: 8px 0 14px;
+    background: #fff; border: 1px solid var(--chrome-darker);
+    font-size: 12px;
+  }
+  th {
+    background: linear-gradient(to bottom, var(--chrome-lighter), var(--chrome));
+    border: 1px solid var(--chrome-dark);
+    padding: 4px 8px; text-align: left; font-weight: bold;
+    box-shadow: inset 0 1px 0 #fff;
+  }
+  td { border: 1px solid var(--chrome-dark); padding: 4px 8px; vertical-align: top; }
+  tr:nth-child(even) td { background: #f4f6f6; }
+  blockquote {
+    border-left: 4px solid var(--yellow); background: var(--chrome-light);
+    padding: 6px 12px; margin: 8px 0 12px; color: var(--chrome-darker);
+  }
+  img { max-width: 100%; border: 1px solid var(--chrome-darker); box-shadow: 2px 2px 0 rgba(0,0,0,0.25); background: #fff; }
+  hr { border: none; border-top: 1px solid var(--chrome-dark); margin: 16px 0; }
+  a { color: var(--teal); }
+  .logo-line { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .logo-line img { width: 72px; border: 1px solid var(--chrome-darker); }
+  .replicant {
+    background: var(--teal); color: var(--chrome-lighter);
+    padding: 4px 10px; border: 1px solid var(--chrome-darker);
+    display: inline-block; font-family: "Courier New", monospace; font-size: 11px;
+    box-shadow: 2px 2px 0 rgba(0,0,0,0.3); margin: 2px 4px 2px 0;
+  }
+  .deskbar {
+    position: fixed; top: 30px; right: 30px; width: 170px;
+    background: var(--chrome); border: 1px solid var(--chrome-darker);
+    box-shadow: 2px 2px 0 rgba(0,0,0,0.4); z-index: 10;
+  }
+  .deskbar-top {
+    background: var(--yellow); border-bottom: 1px solid var(--chrome-darker);
+    padding: 6px 10px; display: flex; align-items: center; gap: 6px; font-weight: bold; font-size: 12px;
+  }
+  .deskbar-item { padding: 4px 10px; border-bottom: 1px solid var(--chrome-dark); font-size: 11px; }
+  .deskbar-item a { color: var(--ink); text-decoration: none; display: block; }
+  .deskbar-item:hover { background: var(--yellow); }
+  @media (max-width: 1240px) { .deskbar { position: static; width: auto; margin: 0 auto 20px; max-width: 960px; } }
+</style>
+</head>
+<body>
+
+<nav class="deskbar">
+  <div class="deskbar-top"><span class="dot"></span>CameraTinyMES</div>
+  <div class="deskbar-item"><a href="#readme">README — 项目说明</a></div>
+  <div class="deskbar-item"><a href="#readme-feature">功能与采样机制</a></div>
+  <div class="deskbar-item"><a href="#readme-label">误判标注</a></div>
+  <div class="deskbar-item"><a href="#dbreport">数据库分析报告</a></div>
+  <div class="deskbar-item"><a href="#dbreport-design">设计特点分析</a></div>
+  <div class="deskbar-item"><a href="#dbreport-compare">对比与启示</a></div>
+</nav>
+
+<!-- ============================== README ============================== -->
+<div class="window" id="readme">
+  <div class="titlebar"><div class="tab"><span class="dot"></span>README.md</div><div class="filler"></div></div>
+  <div class="content">
+    <div class="logo-line">
+      <img src="assets/app_icon_preview.png" alt="CameraTinyMES">
+      <h1>CameraTinyMES — 迷你 MES 系统</h1>
+    </div>
+    <p>基于 Python 的<strong>迷你 MES（制造执行系统）</strong>：只依赖 <code>sqlite3</code> 等轻量库，即可在产线现场实现 MES 的核心功能——<strong>数据采集、生产追溯、质量判定与统计报表</strong>。</p>
+    <blockquote>
+      本工程从 CameraCellMonitor（Cognex In-Sight 单元格数据监控器）派生而来，复用其相机数据采集底座，在其上扩展 MES 功能。<br>
+      界面与交互参考 <code>显示软件=20260321</code>（CameraHelper，WinForms 多相机宫格显示软件）。
+    </blockquote>
+
+    <h2>项目定位</h2>
+    <table>
+      <tr><th>传统 MES</th><th>CameraTinyMES</th></tr>
+      <tr><td>重型架构（Oracle/SQL Server + B/S + 多服务）</td><td>单机轻量（标准库 <code>sqlite3</code> 单文件数据库）</td></tr>
+      <tr><td>部署复杂、需要服务器</td><td>Python 脚本 / 单 exe 即开即用</td></tr>
+      <tr><td>通用行业方案</td><td>围绕视觉检测产线（智能相机 + GigE 工业相机）定制</td></tr>
+    </table>
+    <p>适合<strong>小型产线 / 试产线 / 实验线</strong>：没有 IT 部门支持时，一台电脑 + 几台相机即可跑起来。</p>
+
+    <h2>界面截图</h2>
+    <table>
+      <tr><th>界面截图</th><th>说明</th></tr>
+      <tr><td><img src="assets/annotated_ui_2026-11-02_111229.png" alt="多相机宫格主界面"></td><td><strong>多相机宫格主界面</strong>：单元格实时值、连接状态与运行日志</td></tr>
+      <tr><td><img src="assets/annotated_ui_2026-11-02_090504.png" alt="单相机面板"></td><td><strong>单相机面板</strong>：单元格结果与连接 / 趋势图 / 导出操作</td></tr>
+      <tr><td><img src="assets/annotated_ui_2026-11-02_090945.png" alt="单元格订阅管理"></td><td><strong>单元格订阅管理</strong>：类型、记录模式、采样间隔与上下限</td></tr>
+    </table>
+
+    <h2 id="readme-feature">功能</h2>
+    <h3>数据采集（源自 CameraCellMonitor）</h3>
+    <ul>
+      <li><strong>两类相机接入</strong>：
+        <ul>
+          <li><strong>智能相机</strong>：Cognex In-Sight（CogSocket <code>ws://&lt;相机IP&gt;:&lt;端口&gt;/ws</code>，固件 22.2+ 默认端口 80，6.x+ 为 8087），相机在机端完成检测，软件采集其单元格结果</li>
+          <li><strong>GigE 工业相机</strong>：支持 GigE Vision / GenICam 标准的工业面阵相机，软件取像后结合检测算法 / 判定逻辑产出结果</li>
+        </ul>
+      </li>
+      <li><strong>多相机并发</strong>：可同时连接 / 混用多台智能相机与 GigE 工业相机，单相机掉线自动重连，不影响其他相机</li>
+      <li><strong>多单元格订阅</strong>：支持按结果事件（<code>resultChanged</code>）触发或定时轮询（<code>poll_interval</code>）</li>
+      <li><strong>单元格数据类型</strong>：<code>auto / int / float / string / bool / other</code></li>
+      <li><strong>阈值判定</strong>：advanced 记录模式 + 数值类型时按上下限判定 OK/NG；simple 模式仅记录数据、不判定</li>
+    </ul>
+    <h3>MES 功能（本项目新增）</h3>
+    <ul>
+      <li><strong>产品追溯</strong>：以工件 / 批次号为主线，串联 检测时间、相机、单元格数据与 OK/NG 判定</li>
+      <li><strong>生产记录</strong>：班次 / 工单 / 产品型号维度的产量统计（总数 / OK 数 / NG 数 / 直通率）</li>
+      <li><strong>质量看板</strong>：按时间、产品、相机等多维度统计良率、超差率、CPK 等指标</li>
+      <li><strong>NG 分析</strong>：NG 明细查询与导出（xlsx + CSV），辅助根本原因分析</li>
+      <li><strong>报表导出</strong>：xlsx 报表按 相机/日期/单元格 生成工作表，文件名自动追加时间戳防覆盖</li>
+      <li><strong>可视化</strong>：折线 / 散点 / 趋势图，中文字体内嵌 <code>assets/</code>，不依赖系统字体</li>
+      <li><strong>人工复核（误判标注）</strong>：对生产数据中的误判图片进行人工复核——绘制方框 ROI 圈出误判之处，并填写误判原因 / 注意点说明；标注结果按 <strong>XAnyLabeling 3.3.x</strong> 格式存储，可直接用于其他视觉算法训练学习误判区分</li>
+    </ul>
+
+    <h2>技术要点</h2>
+    <table>
+      <tr><th>项</th><th>方案</th></tr>
+      <tr><td>语言/环境</td><td>Python 3.13，尽量只用轻量依赖</td></tr>
+      <tr><td>包管理</td><td>uv（<code>pyproject.toml</code> + <code>uv.lock</code>）</td></tr>
+      <tr><td>智能相机通信</td><td>CogSocket WebSocket（JSON-RPC + 事件订阅）</td></tr>
+      <tr><td>GigE 工业相机</td><td>GigE Vision / GenICam 取像（帧回调触发采样与判定）</td></tr>
+      <tr><td>数据存储</td><td>标准库 <code>sqlite3</code> 单文件数据库（WAL 模式，支持多表并发写入）</td></tr>
+      <tr><td>报表</td><td><code>openpyxl</code>（xlsx）</td></tr>
+      <tr><td>图表</td><td><code>matplotlib</code>（中文字体从 <code>assets/*.ttf</code> 加载）</td></tr>
+      <tr><td>界面</td><td>tkinter（多相机宫格布局，参照 CameraHelper）</td></tr>
+      <tr><td>打包</td><td>PyInstaller 单文件 exe，logo 使用 <code>assets/app_icon.ico</code></td></tr>
+    </table>
+
+    <h2>数据模型（SQLite）</h2>
+    <table>
+      <tr><th>表</th><th>说明</th></tr>
+      <tr><td><code>products</code></td><td>产品型号 / 配方</td></tr>
+      <tr><td><code>work_orders</code></td><td>工单（型号、计划数量、状态）</td></tr>
+      <tr><td><code>records</code></td><td>采样记录：时间戳、相机、单元格、值、OK/NG、工单/批次关联</td></tr>
+      <tr><td><code>cameras</code> / <code>cells</code></td><td>相机与单元格配置</td></tr>
+      <tr><td>其他</td><td>NG 明细、班次、操作日志等按需扩展</td></tr>
+    </table>
+    <blockquote>具体表结构以 <code>src/</code> 实际代码为准。</blockquote>
+
+    <h2>采样机制</h2>
+    <table>
+      <tr><th>模式</th><th>触发方式</th><th>说明</th></tr>
+      <tr><td><code>event</code></td><td>相机 <code>resultChanged</code> 事件</td><td>订阅结果事件，处理完毕调用 <code>ready()</code> 应答（背压控制）</td></tr>
+      <tr><td><code>poll</code></td><td>软件定时轮询</td><td>每隔 <code>poll_interval</code> 秒调用 <code>queryCellResults</code> 拉取单元格当前值</td></tr>
+    </table>
+    <p><strong>GigE 工业相机</strong>由软件端取像：相机帧回调 → 触发采样与判定逻辑 → 结果落库（OK/NG 判定在软件内完成，阈值配置与智能相机共用一套）。</p>
+
+    <h2 id="readme-label">误判标注（人工复核）</h2>
+    <p>复核流程：从生产记录中筛选误判图片 → 人工在图像上绘制方框 ROI 标记误判位置 → 填写误判原因 / 注意点 → 保存标注文件，供其他视觉算法训练学习误判区分。</p>
+    <p>标注文件采用 <strong>XAnyLabeling 3.3.x</strong> JSON 格式，每张图片对应一个同名 <code>.json</code> 文件：</p>
+    <ul>
+      <li><strong>图片数据内嵌 <code>imageData</code></strong>（Base64 编码），<strong>不依赖 <code>imagePath</code></strong>——标注文件自包含，脱离原始图片目录仍可被训练管线直接读取</li>
+      <li>方框 ROI 使用 <code>shape_type: "rectangle"</code>，<code>points</code> 为左上角 / 右下角两点的像素坐标</li>
+      <li><code>label</code> 为误判类别；<code>description</code> 记录误判原因或注意点</li>
+    </ul>
+    <pre><code>{
+  "version": "3.3.6",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "misjudge_scratch",
+      "score": null,
+      "points": [[512.0, 340.0], [768.0, 512.0]],
+      "group_id": null,
+      "description": "误判原因：反光被误判为划痕；注意避免侧光角度",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "CAM01_20261108_101530.jpg",
+  "imageData": "&lt;Base64 编码的图片数据&gt;",
+  "imageHeight": 1944,
+  "imageWidth": 2592
+}</code></pre>
+    <blockquote><code>imagePath</code> 仅保留文件名作展示用途，训练读取以 <code>imageData</code> 为准。</blockquote>
+
+    <h2>开发 / 运行</h2>
+    <pre><code>uv sync                              # 安装依赖
+uv run mes                           # 启动应用
+uv run mes --simulate                # 启动内置模拟相机离线体验完整流程
+uv run python build_exe.py           # PyInstaller 打包 dist/exe_{yyyyMMddHHmmss}.exe</code></pre>
+  </div>
+</div>
+
+<!-- ============================== 数据库分析报告 ============================== -->
+<div class="window" id="dbreport">
+  <div class="titlebar"><div class="tab teal"><span class="dot"></span>数据库分析报告.md</div><div class="filler"></div></div>
+  <div class="content">
+    <h1>数据库分析报告</h1>
+    <blockquote>
+      分析对象：对标 MES 项目（MesServer）的两个交付物<br>
+      <code>reference/mes-local-pilot.db</code> — 本地试点 SQLite 数据库快照（含真实试点数据）<br>
+      <code>reference/mes-mysql-script.zip</code> — MySQL 版自包含部署包（MesServer.Api，win-x64）<br>
+      分析日期：2026-11-08
+    </blockquote>
+
+    <h2>1. 对标系统概况</h2>
+    <h3>1.1 技术栈</h3>
+    <table>
+      <tr><th>项</th><th>内容</th></tr>
+      <tr><td>应用</td><td>MesServer.Api（ASP.NET Core 8 发布包，自包含 win-x64）</td></tr>
+      <tr><td>ORM</td><td><strong>EF Core 8.0.4</strong>（数据库由迁移生成，无手写 SQL 脚本）</td></tr>
+      <tr><td>持久化</td><td>多 Provider 可切换：<code>SqlServer</code> / <code>MySql</code>(8.0) / <code>Sqlite</code> / <code>LocalDb</code></td></tr>
+      <tr><td>缓存</td><td>Redis（MySQL 脚本包强制降级为 Memory，免 Redis 依赖）</td></tr>
+      <tr><td>实时通信</td><td>SignalR（心跳 10s / 客户端超时 60s）</td></tr>
+      <tr><td>其他</td><td>JWT 认证、Serilog 日志、PLC 轮询/下发后台服务、Ollama 本地 AI 助手</td></tr>
+    </table>
+    <h3>1.2 两个交付物的关系</h3>
+    <ul>
+      <li><strong>mes-mysql-script.zip</strong> 不是 SQL 脚本，而是整站发布包，由 <code>start.bat</code> 通过 <code>MES_*</code> 环境变量强制 <code>Persistence.Provider=MySql</code>，建库依赖应用启动时的 EF Core 迁移。</li>
+      <li><strong>mes-local-pilot.db</strong> 是同一套 schema 在 Sqlite Provider 下的试点运行产物，可用于离线分析完整的表结构与索引设计。</li>
+    </ul>
+    <blockquote><strong>结论：分析 SQLite 快照的 schema 即等同于分析 MySQL 版的目标 schema</strong>（EF Core 多 Provider 共用一套模型，仅类型映射有差异）。</blockquote>
+
+    <h2>2. 数据库结构总览</h2>
+    <p>共 <strong>73 张表</strong>（含 <code>__EFMigrationsHistory</code>），<strong>216 个索引</strong>。按业务域分组：</p>
+    <h3>2.1 组织与权限（5 表）</h3>
+    <table>
+      <tr><th>表</th><th>行数</th><th>说明</th></tr>
+      <tr><td>Workshops</td><td>4</td><td>车间</td></tr>
+      <tr><td>ProductionLines</td><td>3</td><td>产线（含工单/换型/配方下发开关）</td></tr>
+      <tr><td>Workstations</td><td>17</td><td>工位（绑定工序、PLC、加工模式 ProcessingMode）</td></tr>
+      <tr><td>Users / Roles / Posts</td><td>1 / 6 / 6</td><td>用户-岗位-角色三级权限</td></tr>
+    </table>
+    <p>组织层级：<code>Workshops → ProductionLines → Workstations</code>，Workstations 再横向关联 <code>Operations</code>（工序）与 <code>Plcs</code>。</p>
+
+    <h3>2.2 编码规则（4 表）</h3>
+    <table>
+      <tr><th>表</th><th>行数</th><th>说明</th></tr>
+      <tr><td>CodeRules</td><td>3</td><td>编码规则头（BusinessType 区分用途）</td></tr>
+      <tr><td>CodeRuleSegments</td><td>14</td><td>规则分段（常量/日期/流水等 + Format/Padding/ResetPolicy）</td></tr>
+      <tr><td>CodeSequenceStates</td><td>86</td><td>流水号状态（按 ScopeKey 记 LastValue，<strong>发号热点表</strong>）</td></tr>
+      <tr><td>CodeGenerationRecords</td><td>31,637</td><td>每次发号留痕（含 ContextJson 上下文）</td></tr>
+    </table>
+
+    <h3>2.3 产品与 BOM（8 表）</h3>
+    <table>
+      <tr><th>表</th><th>行数</th><th>说明</th></tr>
+      <tr><td>Products / ProductVersions</td><td>14 / 14</td><td>产品与版本（版本绑定 BOM、Route，IsCurrent 标记当前版）</td></tr>
+      <tr><td>Boms / BomItems</td><td>6 / 56</td><td>BOM 头/行（SourceType 含 Manual/MBOM 生成）</td></tr>
+      <tr><td>BomOperationItems</td><td>56</td><td><strong>工序级 BOM</strong>：支持 FeedTargetOperationId 跨工序喂料与 StepRole</td></tr>
+      <tr><td>ProductRawMaterialBindings</td><td>56</td><td>产品-路线-工序三级原材料绑定</td></tr>
+      <tr><td>MaterialItems / MaterialLots</td><td>47 / 0</td><td>物料主数据 / 物料批次（含质量放行字段）</td></tr>
+    </table>
+
+    <h3>2.4 工艺路线与规格（9 表）</h3>
+    <table>
+      <tr><th>表</th><th>行数</th><th>说明</th></tr>
+      <tr><td>ProcessRoutes / ProcessRouteSteps</td><td>3 / 16</td><td>路线与步骤（StepRole、MaterialTransferPolicy、IsNonLinear 非线性路线）</td></tr>
+      <tr><td>Operations</td><td>9</td><td>工序主数据</td></tr>
+      <tr><td>ParameterDefinitions</td><td>106</td><td>参数定义（Code/Name/DataType/Unit/IsKeyTrace）</td></tr>
+      <tr><td>ParameterSpecs</td><td>966</td><td><strong>参数规格（带版本）</strong>：Version+Status+PublishedAt 版本管理，JudgementMode 判定方式</td></tr>
+      <tr><td>OperationQualitySpecs / DeviceModel*Templates / QualityControlPlans</td><td>0</td><td>质检标准、设备型号模板、质控计划（试点未启用）</td></tr>
+    </table>
+
+    <h3>2.5 工单与执行（核心流水域，11 表）</h3>
+    <table>
+      <tr><th>表</th><th>行数</th><th>说明</th></tr>
+      <tr><td>WorkOrders</td><td>90</td><td>工单（快照 + 状态机：Created/Started/Activated/Cancelled/Completed/Archived）</td></tr>
+      <tr><td>WorkOrderTasks</td><td>655</td><td>工单×路线步骤任务</td></tr>
+      <tr><td>WorkOrderSchedules</td><td>0</td><td>排产（未启用）</td></tr>
+      <tr><td>SerialNumbers</td><td>23,665</td><td>序列号主档（SourceSn 返工来源、当前位置、超产标记）</td></tr>
+      <tr><td>StationSessions</td><td>32,206</td><td><strong>过站会话</strong>（进站扫码→生成/绑定 SN→出站）</td></tr>
+      <tr><td>ExecutionRecords</td><td>32,185</td><td><strong>过站执行记录</strong>（SN+工单+路线+工序+工位+设备+操作员+Result+CycleTimeMs）</td></tr>
+      <tr><td>SnStationDurations</td><td>9,633</td><td>SN 每站耗时</td></tr>
+      <tr><td>StationRuntimes</td><td>17</td><td>工位运行时状态（单行/工位）</td></tr>
+      <tr><td>ProductionLots</td><td>90</td><td>生产批次（含终放行字段组）</td></tr>
+      <tr><td>WorkOrderMaterialTransfers</td><td>668</td><td>跨工单物料转移（VirtualCode 虚拟码改绑）</td></tr>
+    </table>
+
+    <h3>2.6 质量域（10 表）</h3>
+    <table>
+      <tr><th>表</th><th>行数</th><th>说明</th></tr>
+      <tr><td>InspectionRecords</td><td>776</td><td>检验记录（IsFirstArticle 首件标记）</td></tr>
+      <tr><td>InspectionTasks</td><td>0</td><td>检验任务（未启用）</td></tr>
+      <tr><td>ParamRecords</td><td><strong>332,602</strong></td><td><strong>参数实测记录（最大表）</strong>：含 Lower/Upper/Target/SpecVersion 快照字段组</td></tr>
+      <tr><td>NcRecords</td><td>804</td><td>不合格品单（状态机：指派→评审→关闭）</td></tr>
+      <tr><td>NcCheckoutParamDetails</td><td>14,095</td><td>NC 出库检验参数明细</td></tr>
+      <tr><td>NcCheckoutDefectDetails / DefectRecords / DefectCodes</td><td>0</td><td>缺陷体系（未启用）</td></tr>
+      <tr><td>QualityHoldRecords</td><td>949</td><td>质量冻结（ScopeType+ScopeId 通用作用域）</td></tr>
+      <tr><td>FirstArticlePolicies / FirstArticleRecords / ReworkTasks</td><td>0 / 0 / 1</td><td>首件检验、返工（基本未启用）</td></tr>
+    </table>
+
+    <h3>2.7 PLC / 设备集成（7 表）</h3>
+    <table>
+      <tr><th>表</th><th>行数</th><th>说明</th></tr>
+      <tr><td>Plcs</td><td>8</td><td>PLC 主档（ProtocolType/CpuFamily/IP/Rack/Slot/UnitId）</td></tr>
+      <tr><td>Devices / DeviceModels</td><td>16 / 1</td><td>设备台账与型号（心跳超时监控）</td></tr>
+      <tr><td>TagMappings</td><td>25</td><td><strong>参数→PLC 地址映射</strong>（位偏移/字节序/缩放/采样模式）</td></tr>
+      <tr><td>WorkstationIoTags</td><td>496</td><td>工位/产线 IO 点位（Scope 区分站级/线级）</td></tr>
+      <tr><td>WorkstationDeviceBindings</td><td>16</td><td>工位-设备绑定（含虚拟码规则）</td></tr>
+      <tr><td>Recipes / RecipeBindings</td><td>15 / 80</td><td>配方及其到工位/PLC 的绑定</td></tr>
+      <tr><td>PlcDispatchJobs</td><td>1,260</td><td><strong>PLC 下发任务队列</strong>（PayloadJson + 状态机 + 重试策略）</td></tr>
+    </table>
+
+    <h3>2.8 异常与日志（2 表）</h3>
+    <table>
+      <tr><th>表</th><th>行数</th><th>说明</th></tr>
+      <tr><td>ExceptionEvents</td><td>2,059</td><td>异常事件（CorrelationKey 关联键，确认/升级/关闭三段处理）</td></tr>
+      <tr><td>SystemEventLogs</td><td>29,666</td><td>系统事件日志（分类/级别/用户/请求路径/TraceId）</td></tr>
+    </table>
+
+    <h3>2.9 其他（11 表）</h3>
+    <p>DataDictionaryItems(18)、SystemParameters(13)、PackagingPackages(1)/PackagingItems(0)、ProductionLineMutexes(4)、FirstStationCodePolicies(1)、WorkstationReworkPolicies(0)、IssueOrders(0)、WorkstationMaterialBindings(0)、MaterialConsumeRecords(0)、ProductGenealogies(<strong>101,273</strong>，SN 父子谱系+物料谱系追溯)。</p>
+
+    <h2 id="dbreport-design">3. 设计特点分析</h2>
+    <h3>3.1 值得借鉴的设计</h3>
+    <ol>
+      <li><strong>快照字段（Snapshot）模式</strong>：<code>ParamRecords</code> 存发生时点的规格副本，规格改版后历史判定依据仍可追溯。</li>
+      <li><strong>规格版本管理</strong>：<code>ParameterSpecs</code> 用 <code>Version + Status + PublishedAt</code> 做版本化，参数记录通过 <code>SpecVersionSnapshot</code> 锚定版本。</li>
+      <li><strong>RowNo 自增辅助列</strong>：TEXT 主键（GUID）无序，RowNo 提供稳定的插入顺序用于分页/增量同步。</li>
+      <li><strong>通用作用域设计</strong>：<code>QualityHoldRecords(ScopeType+ScopeId)</code>、<code>ExceptionEvents(CorrelationKey)</code> 一套结构适配任意层级对象。</li>
+      <li><strong>状态机字段组</strong>：工单六段时间戳；异常 确认→升级→关闭；NC 指派→评审→关闭，满足审计要求。</li>
+      <li><strong>索引命名与覆盖规范</strong>：<code>IX_{Table}_{Columns}</code> 风格，高频查询建复合索引，外键几乎都有索引。</li>
+      <li><strong>下发队列表</strong>：<code>PlcDispatchJobs</code> 持久化队列（状态+重试+下次重试时间），崩溃可恢复。</li>
+      <li><strong>删改策略区分</strong>：主数据引用 <code>ON DELETE RESTRICT</code>，聚合子表 <code>CASCADE</code>。</li>
+    </ol>
+
+    <h3>3.2 潜在问题 / 风险点</h3>
+    <table>
+      <tr><th>问题</th><th>说明</th></tr>
+      <tr><td><strong>decimal 存为 TEXT</strong></td><td>SQLite 下 EF Core 把 decimal 映射为 TEXT，SQL 层无法直接做数值范围查询；MySQL 版映射为原生 decimal，两库行为存在隐式差异风险</td></tr>
+      <tr><td><strong>主键全为 TEXT(GUID)</strong></td><td>无聚簇递增主键，大表插入易产生页分裂（MySQL/InnoDB 下尤其明显），RowNo 是事后补救</td></tr>
+      <tr><td><strong>大量空表</strong></td><td>73 表中约 25 张 0 行，schema 超前于实际使用，维护成本高</td></tr>
+      <tr><td><strong>配置内含敏感信息</strong></td><td>appsettings.Development.json 含明文 BootstrapAdmin 密码与 JWT 签名密钥，正式环境需外部化密钥管理</td></tr>
+      <tr><td><strong>无分区/归档策略</strong></td><td>ParamRecords、SystemEventLogs、CodeGenerationRecords 持续增长无 TTL/归档设计</td></tr>
+      <tr><td><strong>迁移命名不一致</strong></td><td>混入双时间戳命名，反映多人并行开发时迁移管理曾失控</td></tr>
+    </table>
+
+    <h3>3.3 数据规模画像（试点库）</h3>
+    <pre><code>ParamRecords        332,602   ████████████████████  参数实测（≈10 参数/次过站）
+ProductGenealogies  101,273   ██████
+ExecutionRecords     32,185   ██      过站记录
+StationSessions      32,206   ██
+CodeGenerationRecords 31,637  ██      发号留痕
+SystemEventLogs      29,666   ██
+SerialNumbers        23,665   █
+其余业务表           &lt; 2,100</code></pre>
+    <p>比例验证：<code>ParamRecords / ExecutionRecords ≈ 10.3</code>，与 ParameterDefinitions(106) / 工位(17) 的规模吻合——每次过站采集约 10 个参数，数据模型自洽。</p>
+
+    <h2>4. 迁移历史（演进脉络）</h2>
+    <p><code>__EFMigrationsHistory</code> 共 <strong>69 个迁移</strong>，EF Core 8.0.4，时间跨度 2026-02-08 → 2026-08-26：</p>
+    <table>
+      <tr><th>阶段</th><th>时间</th><th>标志性迁移</th></tr>
+      <tr><td>初始建模</td><td>2026-02</td><td>InitialCreate、工单/产品重构</td></tr>
+      <tr><td>一期闭环</td><td>2026-03 中</td><td>BOM 模块、Phase1ClosedLoop、设备型号/绑定、PLC 编码规则与 IO 点位、StationSessions</td></tr>
+      <tr><td>试点加固</td><td>2026-03 下</td><td>PilotHardening、工单激活与配方、下发改重试、角色权限、返工、首件、质控计划、异常事件、排产与质量门禁</td></tr>
+      <tr><td>二期扩展</td><td>2026-04~05</td><td>物料绑定、产线下发策略、超产标记、虚拟码、IO 点位作用域、工单归档、返工策略</td></tr>
+      <tr><td>三期深化</td><td>2026-06~08</td><td>尾站出货码、数据字典、包装管理、非线性路线、NC 出库检验、产线互斥、<strong>MBOM 生成</strong>、SN 来源追溯、跨工单序列号、物料转移锁</td></tr>
+    </table>
+    <p>最后一个月（2026-08）集中做了 17 个迁移，主题是与上游系统（EBOM→MBOM、跨工单流转）的集成，说明系统正从"单机过站追溯"向"多系统协同"演进。</p>
+
+    <h2 id="dbreport-compare">5. 对 CameraTinyMES 的对比与启示</h2>
+    <table>
+      <tr><th>维度</th><th>对标项目（MesServer）</th><th>CameraTinyMES 现状</th><th>启示</th></tr>
+      <tr><td>定位</td><td>全厂级 MES 全链路</td><td>相机数据轻量采集（samples/images 两表）</td><td>定位不同，<strong>不应照搬全量 schema</strong></td></tr>
+      <tr><td>参数记录</td><td>ParamRecords 带<strong>规格快照 + 版本号</strong></td><td>samples 仅存 value/result</td><td><strong>建议采纳</strong>：samples 增加阈值/版本快照列</td></tr>
+      <tr><td>主键</td><td>TEXT GUID（分布式友好，但无序）</td><td>INTEGER 自增</td><td>单机场景自增更优，保持现状</td></tr>
+      <tr><td>数值存储</td><td>decimal→TEXT（EF SQLite 局限）</td><td>REAL 原生存储</td><td>无此问题</td></tr>
+      <tr><td>判定模式</td><td>ParameterSpecs 版本化 + JudgementMode</td><td>上下限硬编码在单元格配置</td><td>中期可引入"规格版本"概念</td></tr>
+      <tr><td>事件追溯</td><td>ExceptionEvents（CorrelationKey + 三段处理）</td><td>无</td><td>相机断线/超差可建轻量 events 表</td></tr>
+      <tr><td>图像</td><td>未涉及（对接 PLC 为主）</td><td>images 表 + A0 渲染合成</td><td>CameraTinyMES 的差异化能力，对标项目缺失</td></tr>
+      <tr><td>部署</td><td>多 Provider（SqlServer/MySQL/SQLite）</td><td>SQLite 单文件</td><td>单机 SQLite 足够；多客户端汇聚时可参考 Provider 抽象</td></tr>
+    </table>
+    <p><strong>优先级建议</strong>（投入产出比排序）：</p>
+    <div>
+      <span class="replicant">P1 · samples 增加阈值快照列</span>
+      <span class="replicant">P2 · 轻量异常/事件表</span>
+      <span class="replicant">P3 · 规格版本字段预留</span>
+    </div>
+
+    <h2>6. 附：关键表 DDL 摘录</h2>
+    <h3>ParamRecords（对标项目最大表，快照模式范例）</h3>
+    <pre><code>CREATE TABLE "ParamRecords" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_ParamRecords" PRIMARY KEY,
+    "ExecutionRecordId" TEXT NOT NULL,
+    "ParamDefId" TEXT NOT NULL,
+    "ParamCodeSnapshot" TEXT NOT NULL,      -- 快照：参数编码
+    "ParamNameSnapshot" TEXT NOT NULL,      -- 快照：参数名
+    "UnitSnapshot" TEXT NULL,
+    "ValueDecimal" TEXT NULL,               -- 实测值（decimal 存 TEXT）
+    "ValueText" TEXT NULL,
+    "JudgeResult" TEXT NOT NULL,            -- OK/NG
+    "LowerSnapshot" TEXT NULL,              -- 快照：判定下限
+    "UpperSnapshot" TEXT NULL,              -- 快照：判定上限
+    "TargetSnapshot" TEXT NULL,
+    "SpecVersionSnapshot" INTEGER NOT NULL, -- 快照：规格版本
+    "RecordedAt" TEXT NOT NULL,
+    "DeviceTimestamp" TEXT NULL, "RowNo" INTEGER,
+    ...
+);</code></pre>
+    <h3>PlcDispatchJobs（持久化下发队列范例）</h3>
+    <pre><code>CREATE TABLE "PlcDispatchJobs" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_PlcDispatchJobs" PRIMARY KEY,
+    "WorkOrderId" TEXT NOT NULL, "WorkstationId" TEXT NOT NULL,
+    "PlcId" TEXT NOT NULL, "RecipeId" TEXT NULL,
+    "DispatchType" TEXT NOT NULL, "Status" TEXT NOT NULL,
+    "PayloadJson" TEXT NOT NULL,
+    "RequestedAt" TEXT NOT NULL,
+    "RetryCount" INTEGER NOT NULL DEFAULT 0,
+    "MaxRetryCount" INTEGER NOT NULL DEFAULT 0,
+    "NextRetryAt" TEXT NULL,
+    "SentAt" TEXT NULL, "AcknowledgedAt" TEXT NULL,
+    "ErrorCode" TEXT NULL, "ErrorMessage" TEXT NULL, "UpdateTime" TEXT NULL
+);
+-- 关键索引：IX_PlcDispatchJobs_Status_NextRetryAt（轮询待重试任务）</code></pre>
+
+    <h2>7. 结论</h2>
+    <p>对标项目是一套<strong>架构成熟、演进活跃</strong>（8 个月 69 次迁移）的工厂级 MES：EF Core 多 Provider 设计使同一 schema 可跑在 SQLite（试点）与 MySQL/SqlServer（正式）上；其参数快照、规格版本、持久化下发队列、通用作用域冻结等模式对 CameraTinyMES 有直接借鉴价值。但其 73 表的复杂度远超 CameraTinyMES"相机采集+判定+报表"的定位，<strong>建议仅吸收"快照追溯"与"事件记录"两个核心模式</strong>，保持当前的轻量架构。</p>
+  </div>
+</div>
+
+</body>
+</html>
