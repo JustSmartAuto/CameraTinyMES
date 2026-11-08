@@ -1,18 +1,65 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8">
-    <link rel="icon" href="/favicon.ico">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MES 制造执行系统</title>
-    <script type="module" crossorigin src="/assets/index-qVka3JPp.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/vue-vendor-DlKK68WR.js">
-    <link rel="modulepreload" crossorigin href="/assets/element-plus-DPIZIuUj.js">
-    <link rel="modulepreload" crossorigin href="/assets/app-vendor-C5wVSolz.js">
-    <link rel="stylesheet" crossorigin href="/assets/element-plus-JOkaxSCk.css">
-    <link rel="stylesheet" crossorigin href="/assets/index-BEiIvAa5.css">
-  </head>
-  <body>
-    <div id="app"></div>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="favicon.ico">
+  <link rel="stylesheet" href="../02-windows-95.css">
+  <link rel="stylesheet" href="mock.css">
+  <title>CameraTinyMES - 制造执行系统</title>
+</head>
+<body>
+  <main class="desktop">
+    <section class="window app-window" aria-label="CameraTinyMES 制造执行系统">
+      <header class="title-bar">
+        <div class="title-text"><span class="app-icon">▦</span> CameraTinyMES - 制造执行系统</div>
+        <div class="window-controls"><button aria-label="最小化">_</button><button aria-label="最大化">□</button><button aria-label="关闭">×</button></div>
+      </header>
+      <nav class="menu-bar" aria-label="系统菜单">
+        <button>文件(<u>F</u>)</button><button>编辑(<u>E</u>)</button><button>视图(<u>V</u>)</button><button>帮助(<u>H</u>)</button>
+        <span class="mock-label">MOCK 演示环境</span>
+      </nav>
+      <div class="toolbar">
+        <button data-action="refresh">↻<span>刷新</span></button>
+        <button data-action="new-order">＋<span>新建工单</span></button>
+        <button data-action="export">⇩<span>导出报表</span></button>
+        <span class="toolbar-separator"></span>
+        <div class="connection"><i class="status-dot online"></i> 服务已连接 <span id="current-time"></span></div>
+      </div>
+      <div class="workspace">
+        <aside class="sidebar sunken">
+          <div class="sidebar-heading">制造资源管理器</div>
+          <button class="nav-item active" data-page="dashboard"><span>▣</span>生产看板</button>
+          <button class="nav-item" data-page="orders"><span>▤</span>工单管理</button>
+          <button class="nav-item" data-page="stations"><span>▧</span>工位执行</button>
+          <button class="nav-item" data-page="quality"><span>✓</span>质量管理</button>
+          <button class="nav-item" data-page="devices"><span>⌁</span>设备监控</button>
+          <button class="nav-item" data-page="trace"><span>⌕</span>产品追溯</button>
+          <div class="nav-divider"></div>
+          <button class="nav-item" data-page="system"><span>⚙</span>系统状态</button>
+        </aside>
+        <section class="content">
+          <div class="tabs"><button class="tab active" id="page-tab">生产看板</button></div>
+          <div id="page-content" class="page-content"></div>
+        </section>
+      </div>
+      <footer class="status-bar"><span class="status-cell">就绪</span><span class="status-cell">用户：管理员</span><span class="status-cell">1 号总装车间</span><span class="status-cell">v2.4.0 Mock</span></footer>
+    </section>
+  </main>
+
+  <dialog id="order-dialog" class="window dialog">
+    <form method="dialog" id="order-form">
+      <header class="title-bar"><div class="title-text">新建生产工单</div><button value="cancel" aria-label="关闭">×</button></header>
+      <div class="dialog-body">
+        <label>工单编号<input name="code" required value="MO-20260612-004"></label>
+        <label>产品型号<select name="product"><option>CAM-X200 工业相机</option><option>CAM-S80 视觉传感器</option></select></label>
+        <label>计划数量<input name="quantity" type="number" min="1" required value="100"></label>
+        <label>计划产线<select name="line"><option>总装一线</option><option>总装二线</option></select></label>
+      </div>
+      <div class="dialog-actions"><button value="cancel">取消</button><button id="create-order" value="default">确定</button></div>
+    </form>
+  </dialog>
+  <div id="toast" role="status"></div>
+  <script src="mock.js"></script>
+</body>
 </html>
