@@ -117,3 +117,64 @@ def save_config(data_dir: Path, cameras: list[CameraConfig]) -> None:
         item = asdict(cam)
         data.append(item)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ---------- 数据库连接配置 ----------
+
+# 与 reference/mariadb_installer.py 的安装参数保持一致
+DEFAULT_MARIADB_HOST = "127.0.0.1"
+DEFAULT_MARIADB_PORT = 8306
+DEFAULT_MARIADB_USER = "justsmart"
+DEFAULT_MARIADB_PASSWORD = "justsmart"
+DEFAULT_MARIADB_DATABASE = "camera_tiny_mes"
+DEFAULT_SQLITE_PATH = "db/cell_monitor.db"
+
+
+@dataclass
+class MariaDBConfig:
+    """MariaDB 连接参数。"""
+
+    host: str = DEFAULT_MARIADB_HOST
+    port: int = DEFAULT_MARIADB_PORT
+    user: str = DEFAULT_MARIADB_USER
+    password: str = DEFAULT_MARIADB_PASSWORD
+    database: str = DEFAULT_MARIADB_DATABASE
+    connect_timeout: int = 3
+
+
+@dataclass
+class DatabaseConfig:
+    """存储后端选择：auto=MariaDB 优先、失败回退 SQLite。"""
+
+    backend: str = "auto"  # auto / mariadb / sqlite
+    mariadb: MariaDBConfig = field(default_factory=MariaDBConfig)
+    sqlite_path: str = DEFAULT_SQLITE_PATH
+
+
+def database_config_path(data_dir: Path) -> Path:
+    return data_dir / "config" / "database.json"
+
+
+def load_database_config(data_dir: Path) -> DatabaseConfig:
+    """读取 config/database.json；文件缺失或损坏时使用默认值（auto）。"""
+    path = database_config_path(data_dir)
+    if not path.exists():
+        return DatabaseConfig()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DatabaseConfig()
+    mariadb = raw.get("mariadb") or {}
+    sqlite = raw.get("sqlite") or {}
+    return DatabaseConfig(
+        backend=str(raw.get("db_backend", "auto")).lower(),
+        mariadb=MariaDBConfig(
+            host=str(mariadb.get("host", DEFAULT_MARIADB_HOST)),
+            port=int(mariadb.get("port", DEFAULT_MARIADB_PORT)),
+            user=str(mariadb.get("user", DEFAULT_MARIADB_USER)),
+            password=str(mariadb.get("password", DEFAULT_MARIADB_PASSWORD)),
+            database=str(mariadb.get("database", DEFAULT_MARIADB_DATABASE)),
+            connect_timeout=int(mariadb.get("connect_timeout", 3)),
+        ),
+        sqlite_path=str(sqlite.get("path", DEFAULT_SQLITE_PATH)),
+    )

@@ -15,7 +15,7 @@ from .cogsocket import CogSocketClient, CogSocketError, parse_cells
 from .config import CameraConfig, CellConfig
 from .images import (compose_render, fetch_image, fetch_json, image_source_size,
                      resolve_sources, scaled_url, to_jpeg)
-from .storage import Storage
+from .storage import StorageBase
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def judge(value, cell: CellConfig) -> bool | None:
 class CameraWorker:
     """驱动单台相机的连接-订阅-落库循环。"""
 
-    def __init__(self, cfg: CameraConfig, storage: Storage, events: queue.Queue):
+    def __init__(self, cfg: CameraConfig, storage: StorageBase, events: queue.Queue):
         self.cfg = cfg
         self.storage = storage
         self.events = events  # UI 侧队列，消息为 (camera, kind, payload)
@@ -268,7 +268,7 @@ class CameraWorker:
 class Monitor:
     """管理所有相机 Worker 与事件总线。"""
 
-    def __init__(self, storage: Storage):
+    def __init__(self, storage: StorageBase):
         self.storage = storage
         self.events: queue.Queue = queue.Queue(maxsize=1000)
         self.workers: dict[str, CameraWorker] = {}

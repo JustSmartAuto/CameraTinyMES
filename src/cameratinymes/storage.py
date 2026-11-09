@@ -1,11 +1,14 @@
-"""SQLite + xlsx 双路落库。
+"""SQLite / MariaDB 双后端落库 + xlsx 导出。
 
-SQLite 增量写入所有采样点（时间戳、相机、单元格、值、OK/NG）；
+MariaDB 优先（支持多客户端汇聚），连接不可用时由 `open_storage` 自动回退 SQLite；
+两套后端共用同一套表结构与数据访问接口，时间戳统一存 ISO8601 字符串（毫秒）。
 xlsx 按 相机/日期/单元格 导出工作表，文件名带时间戳后缀。
 """
 
 from __future__ import annotations
 
+import logging
+import re
 import sqlite3
 import threading
 from datetime import datetime
@@ -13,6 +16,10 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+
+from .config import DatabaseConfig, MariaDBConfig, load_database_config
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
@@ -71,32 +78,146 @@ CREATE INDEX IF NOT EXISTS idx_annotations_image ON annotations(image_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_cam_cell_ts ON annotations(camera, cell, ts);
 """
 
+# MariaDB 版 schema：与 SQLite 版字段一一对应，仅类型/自增语法不同
+MARIADB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS samples (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    ts VARCHAR(32) NOT NULL,
+    camera VARCHAR(64) NOT NULL,
+    cell VARCHAR(64) NOT NULL,
+    value DOUBLE NULL,
+    text LONGTEXT NULL,
+    ok TINYINT NULL,
+    lower_limit DOUBLE NULL,
+    upper_limit DOUBLE NULL,
+    spec_version INT NULL,
+    PRIMARY KEY (id),
+    KEY idx_samples_cam_cell (camera, cell, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS images (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    ts VARCHAR(32) NOT NULL,
+    camera VARCHAR(64) NOT NULL,
+    cell VARCHAR(64) NOT NULL,
+    kind VARCHAR(16) NOT NULL,
+    mime VARCHAR(64) NULL,
+    width INT NULL,
+    height INT NULL,
+    data LONGBLOB NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_images_cam_cell (camera, cell, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS events (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    ts VARCHAR(32) NOT NULL,
+    last_ts VARCHAR(32) NULL,
+    recovered_ts VARCHAR(32) NULL,
+    camera VARCHAR(64) NULL,
+    cell VARCHAR(64) NULL,
+    code VARCHAR(64) NOT NULL,
+    message TEXT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'open',
+    PRIMARY KEY (id),
+    KEY idx_events_camera_code_ts (camera, code, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS annotations (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    image_id BIGINT NULL,
+    camera VARCHAR(64) NOT NULL,
+    cell VARCHAR(64) NOT NULL,
+    ts VARCHAR(32) NOT NULL,
+    reviewer VARCHAR(64) NULL,
+    label VARCHAR(64) NOT NULL,
+    description TEXT NULL,
+    `json` LONGTEXT NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_annotations_image (image_id),
+    KEY idx_annotations_cam_cell_ts (camera, cell, ts),
+    CONSTRAINT fk_annotations_image FOREIGN KEY (image_id)
+        REFERENCES images (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 
 def timestamp_suffix(ts: datetime | None = None) -> str:
     return (ts or datetime.now()).strftime("_%Y%m%d_%H%M%S")
 
 
-class Storage:
-    """SQLite 写入器（线程安全，供 asyncio 线程调用）。"""
+def _resolve_sqlite_path(data_dir: Path, configured: str) -> Path:
+    path = Path(configured)
+    return path if path.is_absolute() else Path(data_dir) / path
 
-    def __init__(self, db_path: Path):
-        db_path = Path(db_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+class _SqliteLikeConnection:
+    """让 pymysql 连接具备 sqlite3 风格的 execute / commit / close 调用形态。"""
+
+    # 2006=server gone away, 2013=lost connection：断线后重连并重试一次
+    _DISCONNECT_CODES = (2006, 2013)
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def _run(self, sql: str, args: tuple):
+        cur = self._raw.cursor()
+        cur.execute(sql, args)
+        return cur
+
+    def execute(self, sql: str, args: tuple = ()):
+        try:
+            return self._run(sql, args)
+        except Exception as exc:
+            if exc.args and exc.args[0] in self._DISCONNECT_CODES:
+                self._raw.ping(reconnect=True)
+                return self._run(sql, args)
+            raise
+
+    def commit(self) -> None:
+        self._raw.commit()
+
+    def close(self) -> None:
+        self._raw.close()
+
+
+class StorageBase:
+    """存储后端基类：对外暴露统一的数据访问接口，SQL 方言由子类提供。"""
+
+    backend = "unknown"
+
+    def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.executescript(SCHEMA)
-        self._migrate_schema()
-        self._conn.commit()
+        self._conn = None
+
+    # ---------- 由子类实现 ----------
+
+    def _sql(self, sql: str) -> str:
+        """SQL 方言转换（默认占位符为 ?）。"""
+        return sql
 
     def _migrate_schema(self) -> None:
         """为旧库补齐后加的列（CREATE TABLE IF NOT EXISTS 不会改已有表）。"""
-        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(samples)")}
-        for name, ddl_type in (("lower_limit", "REAL"),
-                               ("upper_limit", "REAL"),
-                               ("spec_version", "INTEGER")):
-            if name not in existing:
-                self._conn.execute(f"ALTER TABLE samples ADD COLUMN {name} {ddl_type}")
+
+    # ---------- 内部执行 ----------
+
+    def _execute(self, sql: str, args: tuple = ()) -> tuple[int | None, int]:
+        """执行写语句并提交，返回 (lastrowid, rowcount)。"""
+        with self._lock:
+            cur = self._conn.execute(self._sql(sql), args)
+            last_id, row_count = cur.lastrowid, cur.rowcount
+            cur.close()
+            self._conn.commit()
+            return last_id, row_count
+
+    def _fetchall(self, sql: str, args: tuple = ()) -> list[tuple]:
+        with self._lock:
+            cur = self._conn.execute(self._sql(sql), args)
+            rows = cur.fetchall()
+            cur.close()
+            return rows
+
+    # ---------- 采样 ----------
 
     def insert_sample(
         self,
@@ -114,15 +235,78 @@ class Storage:
             value = float(raw)
         except (TypeError, ValueError):
             pass
-        with self._lock:
-            self._conn.execute(
-                "INSERT INTO samples"
-                " (ts, camera, cell, value, text, ok, lower_limit, upper_limit, spec_version)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
-                (ts.isoformat(timespec="milliseconds"), camera, cell, value, str(raw), ok,
-                 lower_limit, upper_limit, spec_version),
-            )
-            self._conn.commit()
+        self._execute(
+            "INSERT INTO samples"
+            " (ts, camera, cell, value, text, ok, lower_limit, upper_limit, spec_version)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts.isoformat(timespec="milliseconds"), camera, cell, value, str(raw), ok,
+             lower_limit, upper_limit, spec_version),
+        )
+
+    def query(
+        self,
+        camera: str,
+        cell: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[tuple[str, float | None, str, int | None]]:
+        """返回 [(ts, value, text, ok)]，按时间升序。"""
+        sql = "SELECT ts, value, text, ok FROM samples WHERE camera=? AND cell=?"
+        args: list = [camera, cell]
+        if start:
+            sql += " AND ts>=?"
+            args.append(start.isoformat(timespec="milliseconds"))
+        if end:
+            sql += " AND ts<=?"
+            args.append(end.isoformat(timespec="milliseconds"))
+        sql += " ORDER BY ts"
+        return self._fetchall(sql, tuple(args))
+
+    def query_all(
+        self,
+        camera: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[tuple[str, str, float | None, str, int | None]]:
+        """返回某相机全部采样点 [(ts, cell, value, text, ok)]，按时间升序。"""
+        sql = "SELECT ts, cell, value, text, ok FROM samples WHERE camera=?"
+        args: list = [camera]
+        if start:
+            sql += " AND ts>=?"
+            args.append(start.isoformat(timespec="milliseconds"))
+        if end:
+            sql += " AND ts<=?"
+            args.append(end.isoformat(timespec="milliseconds"))
+        sql += " ORDER BY ts, cell"
+        return self._fetchall(sql, tuple(args))
+
+    def cells(self, camera: str) -> list[str]:
+        rows = self._fetchall(
+            "SELECT DISTINCT cell FROM samples WHERE camera=? ORDER BY cell", (camera,))
+        return [r[0] for r in rows]
+
+    def cameras(self) -> list[str]:
+        rows = self._fetchall("SELECT DISTINCT camera FROM samples ORDER BY camera")
+        return [r[0] for r in rows]
+
+    def delete_samples(self, camera: str, cell: str | None = None,
+                       start: datetime | None = None,
+                       end: datetime | None = None) -> int:
+        """删除采样数据，返回删除行数。cell=None 时删除该相机全部单元格。"""
+        sql = "DELETE FROM samples WHERE camera=?"
+        args: list = [camera]
+        if cell:
+            sql += " AND cell=?"
+            args.append(cell)
+        if start:
+            sql += " AND ts>=?"
+            args.append(start.isoformat(timespec="milliseconds"))
+        if end:
+            sql += " AND ts<=?"
+            args.append(end.isoformat(timespec="milliseconds"))
+        return self._execute(sql, tuple(args))[1]
+
+    # ---------- 图像 ----------
 
     def insert_image(
         self,
@@ -144,15 +328,55 @@ class Storage:
                 width, height = im.size
         except Exception:
             pass
-        with self._lock:
-            self._conn.execute(
-                "INSERT INTO images (ts, camera, cell, kind, mime, width, height, data)"
-                " VALUES (?,?,?,?,?,?,?,?)",
-                (ts.isoformat(timespec="milliseconds"), camera, cell, kind,
-                 mime, width, height, data),
-            )
-            self._conn.commit()
+        self._execute(
+            "INSERT INTO images (ts, camera, cell, kind, mime, width, height, data)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (ts.isoformat(timespec="milliseconds"), camera, cell, kind,
+             mime, width, height, data),
+        )
         return width, height
+
+    def query_images(
+        self,
+        camera: str,
+        cell: str,
+        kind: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[tuple[str, str, str, int | None, int | None, bytes]]:
+        """返回 [(ts, kind, mime, width, height, data)]，按时间升序。"""
+        sql = "SELECT ts, kind, mime, width, height, data FROM images WHERE camera=? AND cell=?"
+        args: list = [camera, cell]
+        if kind:
+            sql += " AND kind=?"
+            args.append(kind)
+        if start:
+            sql += " AND ts>=?"
+            args.append(start.isoformat(timespec="milliseconds"))
+        if end:
+            sql += " AND ts<=?"
+            args.append(end.isoformat(timespec="milliseconds"))
+        sql += " ORDER BY ts"
+        return self._fetchall(sql, tuple(args))
+
+    def delete_images(self, camera: str, cell: str | None = None,
+                      start: datetime | None = None,
+                      end: datetime | None = None) -> int:
+        """删除图像数据，返回删除行数。"""
+        sql = "DELETE FROM images WHERE camera=?"
+        args: list = [camera]
+        if cell:
+            sql += " AND cell=?"
+            args.append(cell)
+        if start:
+            sql += " AND ts>=?"
+            args.append(start.isoformat(timespec="milliseconds"))
+        if end:
+            sql += " AND ts<=?"
+            args.append(end.isoformat(timespec="milliseconds"))
+        return self._execute(sql, tuple(args))[1]
+
+    # ---------- 事件 ----------
 
     def insert_event(
         self,
@@ -165,14 +389,12 @@ class Storage:
     ) -> int:
         """记录一条异常事件（如相机断线、NG 突发），返回事件 id。"""
         stamp = ts.isoformat(timespec="milliseconds")
-        with self._lock:
-            cur = self._conn.execute(
-                "INSERT INTO events (ts, last_ts, camera, cell, code, message, status)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (stamp, stamp, camera, cell, code, message, status),
-            )
-            self._conn.commit()
-            return cur.lastrowid
+        event_id, _ = self._execute(
+            "INSERT INTO events (ts, last_ts, camera, cell, code, message, status)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (stamp, stamp, camera, cell, code, message, status),
+        )
+        return event_id
 
     def query_events(
         self,
@@ -208,8 +430,9 @@ class Storage:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY ts DESC LIMIT ?"
         args.append(limit)
-        with self._lock:
-            return self._conn.execute(sql, args).fetchall()
+        return self._fetchall(sql, tuple(args))
+
+    # ---------- 标注 ----------
 
     def insert_annotation(
         self,
@@ -223,16 +446,14 @@ class Storage:
         image_id: int | None = None,
     ) -> int:
         """保存一条误判标注（json_text 为 XAnyLabeling 3.3.x 完整 JSON），返回标注 id。"""
-        with self._lock:
-            cur = self._conn.execute(
-                "INSERT INTO annotations"
-                " (image_id, camera, cell, ts, reviewer, label, description, json)"
-                " VALUES (?,?,?,?,?,?,?,?)",
-                (image_id, camera, cell, ts.isoformat(timespec="milliseconds"),
-                 reviewer, label, description, json_text),
-            )
-            self._conn.commit()
-            return cur.lastrowid
+        ann_id, _ = self._execute(
+            "INSERT INTO annotations"
+            " (image_id, camera, cell, ts, reviewer, label, description, `json`)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (image_id, camera, cell, ts.isoformat(timespec="milliseconds"),
+             reviewer, label, description, json_text),
+        )
+        return ann_id
 
     def query_annotations(
         self,
@@ -245,7 +466,7 @@ class Storage:
     ) -> list[tuple[int, int | None, str, str, str, str | None, str,
                     str | None, str]]:
         """返回 [(id, image_id, camera, cell, ts, reviewer, label, description, json)]，按时间倒序。"""
-        sql = ("SELECT id, image_id, camera, cell, ts, reviewer, label, description, json"
+        sql = ("SELECT id, image_id, camera, cell, ts, reviewer, label, description, `json`"
                " FROM annotations")
         where: list[str] = []
         args: list = []
@@ -268,131 +489,118 @@ class Storage:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY ts DESC LIMIT ?"
         args.append(limit)
-        with self._lock:
-            return self._conn.execute(sql, args).fetchall()
-
-    def query_images(
-        self,
-        camera: str,
-        cell: str,
-        kind: str | None = None,
-        start: datetime | None = None,
-        end: datetime | None = None,
-    ) -> list[tuple[str, str, str, int | None, int | None, bytes]]:
-        """返回 [(ts, kind, mime, width, height, data)]，按时间升序。"""
-        sql = "SELECT ts, kind, mime, width, height, data FROM images WHERE camera=? AND cell=?"
-        args: list = [camera, cell]
-        if kind:
-            sql += " AND kind=?"
-            args.append(kind)
-        if start:
-            sql += " AND ts>=?"
-            args.append(start.isoformat(timespec="milliseconds"))
-        if end:
-            sql += " AND ts<=?"
-            args.append(end.isoformat(timespec="milliseconds"))
-        sql += " ORDER BY ts"
-        with self._lock:
-            return self._conn.execute(sql, args).fetchall()
-
-    def query(
-        self,
-        camera: str,
-        cell: str,
-        start: datetime | None = None,
-        end: datetime | None = None,
-    ) -> list[tuple[str, float | None, str, int | None]]:
-        """返回 [(ts, value, text, ok)]，按时间升序。"""
-        sql = "SELECT ts, value, text, ok FROM samples WHERE camera=? AND cell=?"
-        args: list = [camera, cell]
-        if start:
-            sql += " AND ts>=?"
-            args.append(start.isoformat(timespec="milliseconds"))
-        if end:
-            sql += " AND ts<=?"
-            args.append(end.isoformat(timespec="milliseconds"))
-        sql += " ORDER BY ts"
-        with self._lock:
-            return self._conn.execute(sql, args).fetchall()
-
-    def cells(self, camera: str) -> list[str]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT DISTINCT cell FROM samples WHERE camera=? ORDER BY cell", (camera,)
-            ).fetchall()
-        return [r[0] for r in rows]
-
-    def query_all(
-        self,
-        camera: str,
-        start: datetime | None = None,
-        end: datetime | None = None,
-    ) -> list[tuple[str, str, float | None, str, int | None]]:
-        """返回某相机全部采样点 [(ts, cell, value, text, ok)]，按时间升序。"""
-        sql = "SELECT ts, cell, value, text, ok FROM samples WHERE camera=?"
-        args: list = [camera]
-        if start:
-            sql += " AND ts>=?"
-            args.append(start.isoformat(timespec="milliseconds"))
-        if end:
-            sql += " AND ts<=?"
-            args.append(end.isoformat(timespec="milliseconds"))
-        sql += " ORDER BY ts, cell"
-        with self._lock:
-            return self._conn.execute(sql, args).fetchall()
-
-    def cameras(self) -> list[str]:
-        with self._lock:
-            rows = self._conn.execute("SELECT DISTINCT camera FROM samples ORDER BY camera").fetchall()
-        return [r[0] for r in rows]
-
-    def delete_samples(self, camera: str, cell: str | None = None,
-                       start: datetime | None = None,
-                       end: datetime | None = None) -> int:
-        """删除采样数据，返回删除行数。cell=None 时删除该相机全部单元格。"""
-        sql = "DELETE FROM samples WHERE camera=?"
-        args: list = [camera]
-        if cell:
-            sql += " AND cell=?"
-            args.append(cell)
-        if start:
-            sql += " AND ts>=?"
-            args.append(start.isoformat(timespec="milliseconds"))
-        if end:
-            sql += " AND ts<=?"
-            args.append(end.isoformat(timespec="milliseconds"))
-        with self._lock:
-            cur = self._conn.execute(sql, args)
-            self._conn.commit()
-            return cur.rowcount
-
-    def delete_images(self, camera: str, cell: str | None = None,
-                      start: datetime | None = None,
-                      end: datetime | None = None) -> int:
-        """删除图像数据，返回删除行数。"""
-        sql = "DELETE FROM images WHERE camera=?"
-        args: list = [camera]
-        if cell:
-            sql += " AND cell=?"
-            args.append(cell)
-        if start:
-            sql += " AND ts>=?"
-            args.append(start.isoformat(timespec="milliseconds"))
-        if end:
-            sql += " AND ts<=?"
-            args.append(end.isoformat(timespec="milliseconds"))
-        with self._lock:
-            cur = self._conn.execute(sql, args)
-            self._conn.commit()
-            return cur.rowcount
+        return self._fetchall(sql, tuple(args))
 
     def close(self) -> None:
         with self._lock:
-            self._conn.close()
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+
+
+class SQLiteStorage(StorageBase):
+    """SQLite 单文件后端（标准库，零依赖，作为兜底）。"""
+
+    backend = "sqlite"
+
+    def __init__(self, db_path: Path):
+        super().__init__()
+        db_path = Path(db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = db_path
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.executescript(SCHEMA)
+        self._migrate_schema()
+        self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(samples)")}
+        for name, ddl_type in (("lower_limit", "REAL"),
+                               ("upper_limit", "REAL"),
+                               ("spec_version", "INTEGER")):
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE samples ADD COLUMN {name} {ddl_type}")
+
+
+# 兼容旧调用方式：Storage(path) 等价于 SQLiteStorage(path)
+Storage = SQLiteStorage
+
+
+class MariaDBStorage(StorageBase):
+    """MariaDB 后端：支持多客户端共享同一数据库；连接失败由 open_storage 回退 SQLite。"""
+
+    backend = "mariadb"
+
+    def __init__(self, cfg: MariaDBConfig | None = None):
+        super().__init__()
+        cfg = cfg or MariaDBConfig()
+        if not re.fullmatch(r"[A-Za-z0-9_]+", cfg.database):
+            raise ValueError(f"非法的数据库名：{cfg.database}")
+        try:
+            import pymysql
+        except ImportError as exc:  # 未安装驱动时回退到 SQLite
+            raise RuntimeError("未安装 pymysql，无法使用 MariaDB 后端") from exc
+
+        self.host, self.port, self.database = cfg.host, cfg.port, cfg.database
+        target = f"{cfg.host}:{cfg.port}/{cfg.database}"
+        self.endpoint = target
+        try:
+            raw = pymysql.connect(host=cfg.host, port=cfg.port, user=cfg.user,
+                                  password=cfg.password, charset="utf8mb4",
+                                  connect_timeout=cfg.connect_timeout)
+            self._conn = _SqliteLikeConnection(raw)
+            with raw.cursor() as cur:
+                cur.execute(f"CREATE DATABASE IF NOT EXISTS `{cfg.database}`"
+                            " DEFAULT CHARACTER SET utf8mb4")
+            # 用 select_db（而非 USE 语句）记录库名，断线重连后可自动恢复
+            raw.select_db(cfg.database)
+            for stmt in MARIADB_SCHEMA.split(";"):
+                if stmt.strip():
+                    self._execute(stmt)
+            self._migrate_schema()
+        except Exception as exc:
+            self.close()
+            raise RuntimeError(f"MariaDB 不可用（{target}）：{exc}") from exc
+
+    def _sql(self, sql: str) -> str:
+        return sql.replace("?", "%s")
+
+    def _migrate_schema(self) -> None:
+        existing = {row[0] for row in self._fetchall("SHOW COLUMNS FROM samples")}
+        for name, ddl_type in (("lower_limit", "DOUBLE"),
+                               ("upper_limit", "DOUBLE"),
+                               ("spec_version", "INT")):
+            if name not in existing:
+                self._execute(f"ALTER TABLE samples ADD COLUMN {name} {ddl_type}")
+
+
+def open_storage(data_dir: Path, config: DatabaseConfig | None = None) -> StorageBase:
+    """按配置选择存储后端：auto=MariaDB 优先，连接失败回退 SQLite。
+
+    回退时记录日志并返回 SQLiteStorage，保证产线采集不因数据库缺失而中断；
+    backend 显式设为 mariadb 时连接失败直接抛错，避免静默降级。
+    """
+    cfg = config or load_database_config(data_dir)
+    if cfg.backend not in ("auto", "mariadb", "sqlite"):
+        raise ValueError(f"未知的数据库后端：{cfg.backend}")
+    if cfg.backend != "sqlite":
+        try:
+            storage = MariaDBStorage(cfg.mariadb)
+            log.info("已连接 MariaDB %s:%s/%s", cfg.mariadb.host, cfg.mariadb.port,
+                     cfg.mariadb.database)
+            return storage
+        except Exception as exc:
+            if cfg.backend == "mariadb":
+                raise
+            log.warning("%s，回退 SQLite", exc)
+    path = _resolve_sqlite_path(data_dir, cfg.sqlite_path)
+    log.info("使用 SQLite 后端：%s", path)
+    return SQLiteStorage(path)
 
 
 def export_xlsx(
-    storage: Storage,
+    storage: StorageBase,
     camera: str,
     out_dir: Path,
     start: datetime | None = None,

@@ -20,7 +20,7 @@ from .config import (
     CELL_DATA_TYPES, NUMERIC_DATA_TYPES, CELL_RECORD_MODES,
     save_config,
 )
-from .storage import Storage, export_xlsx, timestamp_suffix
+from .storage import export_xlsx, timestamp_suffix, open_storage
 from .worker import Monitor
 
 from cameratinymes import __version__
@@ -175,7 +175,7 @@ class MonitorApp:
         self.data_dir = data_dir
         self.cameras = cameras
         self.extra_startup = extra_startup or []
-        self.storage = Storage(data_dir / "db" / "cell_monitor.db")
+        self.storage = open_storage(data_dir)
         self.monitor = Monitor(self.storage)
         self.panels: dict[str, CameraPanel] = {}
 
@@ -185,6 +185,8 @@ class MonitorApp:
         self.root.minsize(1060, 600)
         theme.apply(self.root)
         self._build_ui()
+        endpoint = getattr(self.storage, "endpoint", getattr(self.storage, "path", ""))
+        self._log(f"存储后端: {self.storage.backend}  {endpoint}")
         self._start_asyncio_thread()
 
     # ---------- UI 构建 ----------

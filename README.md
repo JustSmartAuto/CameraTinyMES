@@ -57,7 +57,7 @@
 | 包管理 | [uv](https://github.com/astral-sh/uv)（`pyproject.toml` + `uv.lock`） |
 | 智能相机通信 | CogSocket WebSocket（JSON-RPC：GET/POST/PUT/DELETE + 事件订阅），参考 `reference/CogSocket&WebApi.md` |
 | GigE 工业相机 | GigE Vision / GenICam 取像（帧回调触发采样与判定） |
-| 数据存储 | 优先连接 MariaDB（工控机可经 `reference/mariadb_installer.py` 安装）；连接不可用时自动回退到标准库 `sqlite3` 单文件数据库（WAL 模式），保证最小可用性 |
+| 数据存储 | 优先连接 MariaDB（工控机可经 `reference/mariadb_installer.py` 安装）；连接不可用时自动回退到标准库 `sqlite3` 单文件数据库，保证最小可用性 |
 | 报表 | `openpyxl`（xlsx） |
 | 图表 | `matplotlib`（中文字体从 `assets/*.ttf` 加载） |
 | 界面 | tkinter（多相机宫格布局，参照 CameraHelper） |
@@ -100,15 +100,35 @@
 2. **可用**：所有采样记录、图像与标注数据写入 MariaDB，支持多客户端并发访问与集中汇总
 3. **不可用**（服务未安装 / 未启动 / 连接超时 / 认证失败）：自动回退到 `sqlite3` 单文件数据库并记录日志，**保证单机最小可用性**，不因数据库缺失影响产线采集
 
-两套后端共用同一套表结构与数据访问接口，对上层功能（追溯、看板、报表、标注）透明；运行中 MariaDB 断连时当前批次数据先在本地缓存，恢复后补写。
+两套后端共用同一套表结构与数据访问接口（`Storage` 基类 + `SQLiteStorage` / `MariaDBStorage`），对上层功能（追溯、看板、报表、标注）透明。运行中连接断开时驱动会自动重连并重试一次（错误码 2006 / 2013）；重连失败则记录日志，当前版本不做本地缓冲补写。
+
+配置文件为 `<数据目录>/config/database.json`（缺失时使用默认值，即 MariaDB 优先）：
+
+```json
+{
+  "db_backend": "auto",
+  "mariadb": {
+    "host": "127.0.0.1",
+    "port": 8306,
+    "user": "justsmart",
+    "password": "justsmart",
+    "database": "camera_tiny_mes",
+    "connect_timeout": 3
+  },
+  "sqlite": { "path": "db/cell_monitor.db" }
+}
+```
 
 | 配置项 | 说明 | 默认值 |
 |---|---|---|
-| `db_backend` | `auto`（MariaDB 优先，回退 SQLite）/ `mariadb` / `sqlite` | `auto` |
+| `db_backend` | `auto`（MariaDB 优先，回退 SQLite）/ `mariadb`（连不上直接报错）/ `sqlite`（强制本地） | `auto` |
 | `mariadb.host` / `port` | MariaDB 地址与端口 | `127.0.0.1` / `8306` |
 | `mariadb.user` / `password` | 账号与密码 | `justsmart` / `justsmart` |
-| `mariadb.database` | 数据库名（不存在则自动建库） | `camera_tiny_mes` |
-| `sqlite.path` | 回退时 SQLite 文件路径 | 数据目录下 `db/mes.db` |
+| `mariadb.database` | 数据库名（仅字母/数字/下划线，不存在则自动建库建表） | `camera_tiny_mes` |
+| `mariadb.connect_timeout` | 连接超时（秒） | `3` |
+| `sqlite.path` | 回退时 SQLite 文件路径（相对数据目录） | `db/cell_monitor.db` |
+
+MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖）；所有时间戳统一存 ISO8601 字符串（毫秒），保证两种后端排序与范围查询行为一致。
 
 ## 采样机制
 
