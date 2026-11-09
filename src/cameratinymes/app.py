@@ -12,7 +12,10 @@ import argparse
 import logging
 from pathlib import Path
 
-from cameratinymes.config import CameraConfig, CellConfig, default_data_dir, load_config, save_config
+from cameratinymes.config import (
+    CameraConfig, CellConfig, default_data_dir,
+    load_config, load_settings, save_config,
+)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -34,6 +37,16 @@ def main(argv=None) -> None:
     print(f"数据目录: {data_dir}")
 
     cameras = load_config(data_dir)
+    settings = load_settings(data_dir)
+
+    # settings.autostart_enabled 为 True 但系统侧无快捷方式 → 尝试补建
+    if settings.autostart_enabled:
+        try:
+            from cameratinymes import autostart
+            if not autostart.is_enabled():
+                autostart.set(True, log_fn=lambda m: print(f"[自启] {m}"))
+        except Exception as exc:
+            print(f"[自启] 补建失败: {exc}")
 
     extra_startup = []
     if args.simulate:
@@ -57,7 +70,7 @@ def main(argv=None) -> None:
 
     from cameratinymes.ui import MonitorApp
 
-    app = MonitorApp(data_dir, cameras, extra_startup=extra_startup)
+    app = MonitorApp(data_dir, cameras, settings=settings, extra_startup=extra_startup)
     app.run()
 
 

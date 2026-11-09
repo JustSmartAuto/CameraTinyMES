@@ -178,3 +178,40 @@ def load_database_config(data_dir: Path) -> DatabaseConfig:
         ),
         sqlite_path=str(sqlite.get("path", DEFAULT_SQLITE_PATH)),
     )
+
+
+# ---------- 应用设置（托盘 / 开机自启）----------
+
+@dataclass
+class AppSettings:
+    """应用行为设置（持久化到 config/settings.json）。"""
+
+    minimize_to_tray_on_start: bool = False  # 启动时是否最小化到托盘
+    autostart_enabled: bool = False          # 开机自启（shell:startup 快捷方式）
+
+
+def settings_path(data_dir: Path) -> Path:
+    return data_dir / "config" / "settings.json"
+
+
+def load_settings(data_dir: Path) -> AppSettings:
+    path = settings_path(data_dir)
+    if not path.exists():
+        return AppSettings()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return AppSettings()
+    return AppSettings(
+        minimize_to_tray_on_start=bool(raw.get("minimize_to_tray_on_start", False)),
+        autostart_enabled=bool(raw.get("autostart_enabled", False)),
+    )
+
+
+def save_settings(data_dir: Path, settings: AppSettings) -> None:
+    path = settings_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(asdict(settings), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )

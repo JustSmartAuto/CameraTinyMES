@@ -17,11 +17,13 @@ from tkinter import messagebox, simpledialog, ttk
 
 from . import charts, stats, theme
 from .config import (
+    AppSettings,
     CameraConfig, CellConfig,
     CELL_DATA_TYPES, NUMERIC_DATA_TYPES, CELL_RECORD_MODES,
-    save_config,
+    save_config, save_settings,
 )
 from .storage import export_xlsx, timestamp_suffix, open_storage
+from .tray import TrayIcon
 from .worker import Monitor
 
 from cameratinymes import __version__
@@ -191,9 +193,12 @@ class CameraPanel(tk.Frame):
 
 
 class MonitorApp:
-    def __init__(self, data_dir, cameras: list[CameraConfig], extra_startup: list | None = None):
+    def __init__(self, data_dir, cameras: list[CameraConfig],
+                 settings: AppSettings | None = None,
+                 extra_startup: list | None = None):
         self.data_dir = data_dir
         self.cameras = cameras
+        self.settings = settings or AppSettings()
         self.extra_startup = extra_startup or []
         self.storage = open_storage(data_dir)
         self.monitor = Monitor(self.storage)
@@ -213,6 +218,12 @@ class MonitorApp:
         self._log(f"存储后端: {self.storage.backend}  {endpoint}")
         self._start_db_monitor()
         self._start_asyncio_thread()
+
+        # 托盘图标 + 启动时最小化
+        self._tray = TrayIcon(self.root, on_show=self._show_window, on_quit=self._really_quit)
+        self._tray.start()
+        if self.settings.minimize_to_tray_on_start and self._tray.available:
+            self.root.after(200, self._hide_to_tray)
 
     # ---------- UI 构建 ----------
 
@@ -278,6 +289,12 @@ class MonitorApp:
         data_menu.add_command(label="删除相机数据", command=self.delete_camera_data)
         data_menu.add_command(label="导出", command=self.export_data)
         menubar.add_cascade(label="数据", menu=data_menu)
+        sys_menu = tk.Menu(menubar, tearoff=0)
+        sys_menu.add_command(label="设置…", command=self.show_settings)
+        sys_menu.add_separator()
+        sys_menu.add_command(label="显示 / 隐藏主窗口", command=self._toggle_window)
+        sys_menu.add_command(label="退出", command=self._really_quit)
+        menubar.add_cascade(label="系统", menu=sys_menu)
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="使用说明", command=self.show_help)
         help_menu.add_command(label="关于", command=self.show_about)
@@ -626,9 +643,35 @@ class MonitorApp:
         import os
         os.startfile(self.data_dir)  # noqa: S606 - Windows only
 
-    # ---------- 生命周期 ----------
+    # ---------- 生命周期 & 托盘 ----------
 
     def on_close(self) -> None:
+        """关闭按钮 → 隐藏到托盘（如果可用）；否则直接退出。"""
+        if self._tray.available:
+            self._hide_to_tray()
+        else:
+            self._really_quit()
+
+    def _hide_to_tray(self) -> None:
+        """隐藏主窗口到任务栏和 Alt+Tab，进程继续在托盘后台运行。"""
+        self.root.withdraw()
+        self._log("窗口已隐藏到托盘（右键托盘图标可退出）")
+
+    def _show_window(self) -> None:
+        """从托盘恢复主窗口到前台。"""
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _toggle_window(self) -> None:
+        """系统菜单 / 托盘显示"显示/隐藏主窗口"切换。"""
+        if self.root.state() == "withdrawn":
+            self._show_window()
+        else:
+            self._hide_to_tray()
+
+    def _really_quit(self) -> None:
+        """真正退出：断开相机 → 封存 AV1 → 保存配置 → 销毁窗口。"""
         self.disconnect_all()
         self.root.after(300, self._finish_close)
 
@@ -638,7 +681,18 @@ class MonitorApp:
         self.monitor.writer.close()   # 封存最后一批 AV1 分片
         self.storage.close()
         save_config(self.data_dir, self.cameras)
+        save_settings(self.data_dir, self.settings)
+        self._tray.stop()
         self.root.destroy()
+
+    # ---------- 设置 ----------
+
+    def show_settings(self) -> None:
+        dlg = SettingsDialog(self.root, self.settings, self.data_dir)
+        if dlg.result:
+            self.settings = dlg.result
+            save_settings(self.data_dir, self.settings)
+            self._log(f"设置已保存 → {self.settings}")
 
     def run(self) -> None:
         self.root.mainloop()
@@ -1321,3 +1375,108 @@ class ChartWindow(_IconToplevel):
         canvas = FigureCanvasTkAgg(fig, master=self)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True, padx=2, pady=2)
+
+
+class SettingsDialog(_IconToplevel):
+    """应用设置：启动时最小化、开机自启。"""
+
+    def __init__(self, parent, settings: AppSettings, data_dir):
+        super().__init__(parent)
+        self.title("应用设置")
+        self.result: AppSettings | None = None
+        self.transient(parent)
+        self.configure(bg=C["chrome"])
+        theme.title_tab(self, "应用设置")
+        self._data_dir = data_dir
+
+        body = tk.Frame(self, bg=C["chrome"])
+        body.pack(fill="both", expand=True, padx=12, pady=10)
+
+        # 启动时最小化到托盘
+        self._min_var = tk.BooleanVar(value=settings.minimize_to_tray_on_start)
+        cb_min = tk.Checkbutton(
+            body, text="启动时最小化到系统托盘图标",
+            variable=self._min_var,
+            bg=C["chrome"], fg=C["ink"], font=theme.FONT, anchor="w",
+        )
+        cb_min.pack(anchor="w", pady=2)
+        tk.Label(
+            body,
+            text="勾选后下次启动会自动隐藏主窗口，通过右键托盘图标唤出或退出。",
+            bg=C["chrome"], fg=C["chrome_dark"], font=theme.FONT,
+            justify="left", wraplength=420,
+        ).pack(anchor="w", padx=24)
+
+        tk.Frame(body, bg=C["chrome"], height=1).pack(fill="x", pady=10)
+
+        # 开机自启
+        self._auto_var = tk.BooleanVar(value=settings.autostart_enabled)
+        cb_auto = tk.Checkbutton(
+            body, text="开机自启（创建快捷方式到启动文件夹）",
+            variable=self._auto_var,
+            bg=C["chrome"], fg=C["ink"], font=theme.FONT, anchor="w",
+        )
+        cb_auto.pack(anchor="w", pady=2)
+        startup_dir = str(Path.home() / "AppData" / "Roaming" / "Microsoft" /
+                          "Windows" / "Start Menu" / "Programs" / "Startup")
+        tk.Label(
+            body,
+            text=f"快捷方式位置：{startup_dir}",
+            bg=C["chrome"], fg=C["chrome_dark"], font=theme.FONT,
+            justify="left", wraplength=420,
+        ).pack(anchor="w", padx=24)
+        tk.Label(
+            body,
+            text="（仅创建当前用户的 shell:startup 快捷方式，无需管理员权限）",
+            bg=C["chrome"], fg=C["chrome_dark"], font=theme.FONT,
+        ).pack(anchor="w", padx=24)
+
+        # 实时状态
+        from . import autostart as _as
+        system_on = _as.is_enabled()
+        status_text = (
+            "系统侧已存在开机自启快捷方式 ✓" if system_on
+            else "系统侧当前无开机自启快捷方式"
+        )
+        self._status_label = tk.Label(
+            body, text=f"状态：{status_text}",
+            bg=C["chrome"], fg=C["teal"] if system_on else C["chrome_dark"],
+            font=theme.FONT,
+        )
+        self._status_label.pack(anchor="w", pady=(6, 0))
+
+        btns = tk.Frame(self, bg=C["chrome"])
+        btns.pack(pady=10)
+        theme.beos_button(btns, "确定", self._ok, default=True).pack(side="left", padx=4)
+        theme.beos_button(btns, "取消", self.destroy).pack(side="left", padx=4)
+
+        self.grab_set()
+        parent.wait_window(self)
+
+    def _ok(self) -> None:
+        from . import autostart as _as
+
+        new = AppSettings(
+            minimize_to_tray_on_start=self._min_var.get(),
+            autostart_enabled=self._auto_var.get(),
+        )
+        # 同步系统侧自启状态
+        if new.autostart_enabled:
+            ok = _as.set(True, log_fn=lambda m: self._log_status("✓ " + m))
+            if not ok:
+                messagebox.showerror(
+                    "失败",
+                    "开机自启快捷方式创建失败。\n"
+                    "请确认当前用户对 shell:startup 目录有写权限，\n"
+                    "或手动创建 WScript.Shell COM 组件可用（win32com 模块可选）。",
+                    parent=self,
+                )
+                return
+        else:
+            _as.set(False, log_fn=lambda m: self._log_status("• " + m))
+
+        self.result = new
+        self.destroy()
+
+    def _log_status(self, msg: str) -> None:
+        self._status_label.config(text=msg, fg=C["teal"])
