@@ -53,18 +53,20 @@ LINE_COLOR = "#7f7f7f"
 
 
 def plot_trend(
-    points: list[tuple[str, float | None, str, int | None]],
+    points: list[tuple[str, float | None, str, int | None]]
+            | list[tuple[str, float | None, str, int | None, str | None]],
     title: str,
     lower: float | None = None,
     upper: float | None = None,
     out_path: Path | None = None,
 ):
-    """趋势图：散点（OK 蓝 / NG 红）+ 折线 + 阈值虚线基线。points=[(ts, value, text, ok)]。"""
+    """趋势图：散点（OK 蓝 / NG 红）+ 折线 + 阈值虚线基线。"""
     xs: list[datetime] = []
     ys: list[float] = []
     ng_x: list[datetime] = []
     ng_y: list[float] = []
-    for ts, value, _text, ok in points:
+    for entry in points:
+        ts, value, _text, ok = entry[:4]
         if value is None:
             continue
         t = datetime.fromisoformat(ts)
@@ -107,7 +109,8 @@ def plot_scatter(
 ):
     """散点图：X=采样序号，Y=数值（按超差着色）。"""
     xs, ys, colors = [], [], []
-    for i, (_ts, value, _text, ok) in enumerate(points):
+    for i, entry in enumerate(points):
+        _ts, value, _text, ok = entry[:4]
         if value is None:
             continue
         xs.append(i)
