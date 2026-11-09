@@ -65,15 +65,22 @@
 
 ## 数据模型（SQLite）
 
-| 表 | 说明 |
-|---|---|
-| `products` | 产品型号 / 配方 |
-| `work_orders` | 工单（型号、计划数量、状态） |
-| `records` | 采样记录：时间戳、相机、单元格、值、OK/NG、工单/批次关联 |
-| `cameras` / `cells` | 相机与单元格配置 |
-| 其他 | NG 明细、班次、操作日志等按需扩展 |
+当前为采样、图像、事件、标注四张表；相机与单元格配置存于 `config/cameras.json`，不入库。
 
-> 具体表结构以 `src/` 实际代码为准。
+| 表 | 说明 | 关键字段 |
+|---|---|---|
+| `samples` | 采样记录（含判定依据快照） | `ts` 时间戳、`camera` 相机、`cell` 单元格、`value` 数值、`text` 原始文本、`ok` 判定（1=OK / 0=NG / NULL=无阈值）、`lower_limit` / `upper_limit` 判定时上下限快照、`spec_version` 规格版本（预留） |
+| `images` | 图像 BLOB | `ts`、`camera`、`cell`、`kind`（`image`=原图 / `render`=结果渲染图）、`mime`、`width`、`height`、`data` |
+| `events` | 异常事件（轻量） | `ts` 首次发生、`last_ts` 最近发生、`recovered_ts` 恢复时间、`camera`、`cell`、`code` 事件码、`message`、`status`（`open` / `recovered` / `acked`） |
+| `annotations` | 误判人工复核标注 | `image_id`（关联 `images.id`，随图像级联删除）、`camera`、`cell`、`ts`、`reviewer` 复核人、`label` 误判类别、`description` 误判原因/注意点、`json` 完整 XAnyLabeling 3.3.x JSON（`imageData` 内嵌图片） |
+
+索引：`idx_samples_cam_cell(camera, cell, ts)`、`idx_images_cam_cell(camera, cell, ts)`、`idx_events_camera_code_ts(camera, code, ts)`、`idx_annotations_image(image_id)`、`idx_annotations_cam_cell_ts(camera, cell, ts)`。
+
+`lower_limit` / `upper_limit` 在写入采样时记录当时的判定阈值（仅 `advanced` + 数值类型），后续修改单元格配置不影响历史判定依据；`events` 对应对标系统 `ExceptionEvents` 的简化版，表结构已就绪，采集端断线 / NG 突发写入待接入；`spec_version` 对应 `ParameterSpecs.Version`，暂为预留列。
+
+旧库升级：`Storage` 初始化时通过 `PRAGMA table_info` 检测缺失列并自动 `ALTER TABLE` 补齐，已有采样数据不受影响。
+
+> 具体表结构以 `src/cameratinymes/storage.py` 实际代码为准。
 
 ## 数据库连接（MariaDB 优先，SQLite 兜底）
 
@@ -116,9 +123,9 @@
 
 ## 误判标注（人工复核）
 
-复核流程：从生产记录中筛选误判图片 → 人工在图像上绘制方框 ROI 标记误判位置 → 填写误判原因 / 注意点 → 保存标注文件，供其他视觉算法训练学习误判区分。
+复核流程：从生产记录中筛选误判图片 → 人工在图像上绘制方框 ROI 标记误判位置 → 填写误判原因 / 注意点 → 保存标注记录，供其他视觉算法训练学习误判区分。
 
-标注文件采用 **XAnyLabeling 3.3.x** JSON 格式，每张图片对应一个同名 `.json` 文件：
+标注内容采用 **XAnyLabeling 3.3.x** JSON 格式，完整 JSON 存入 `annotations.json` 列（可按需导出为每张图片对应的同名 `.json` 文件），同时保存 `image_id`、`camera`、`cell`、`reviewer`、`label`、`description` 等元数据便于检索：
 
 - **图片数据内嵌 `imageData`**（Base64 编码），**不依赖 `imagePath`**——标注文件自包含，脱离原始图片目录仍可被训练管线直接读取
 - 方框 ROI 使用 `shape_type: "rectangle"`，`points` 为左上角 / 右下角两点的像素坐标

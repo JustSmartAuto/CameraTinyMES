@@ -179,7 +179,12 @@ class CameraWorker:
     def _store(self, ts: datetime, cell: CellConfig, value) -> None:
         try:
             ok = judge(value, cell)
-            self.storage.insert_sample(ts, self.cfg.name, cell.name, value, ok)
+            # 快照判定阈值：仅 advanced + 数值类型才有判定依据
+            lower = upper = None
+            if not cell.is_simple_record and cell.is_numeric:
+                lower, upper = cell.lower, cell.upper
+            self.storage.insert_sample(ts, self.cfg.name, cell.name, value, ok,
+                                       lower_limit=lower, upper_limit=upper)
         except Exception as exc:
             log.warning("store cell %s failed: %s", cell.name, exc)
 

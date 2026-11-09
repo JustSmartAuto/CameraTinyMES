@@ -22,7 +22,10 @@ CREATE TABLE IF NOT EXISTS samples (
     cell TEXT NOT NULL,             -- 单元格名/地址
     value REAL,                     -- 数值（无法解析为数值时为 NULL）
     text TEXT,                      -- 原始文本
-    ok INTEGER                      -- 1=合格 0=超差 NULL=无阈值
+    ok INTEGER,                     -- 1=合格 0=超差 NULL=无阈值
+    lower_limit REAL,               -- 判定时的下限快照（阈值改判后历史仍可追溯）
+    upper_limit REAL,               -- 判定时的上限快照
+    spec_version INTEGER            -- 规格版本快照（预留，暂未启用）
 );
 CREATE INDEX IF NOT EXISTS idx_samples_cam_cell ON samples(camera, cell, ts);
 
@@ -38,6 +41,34 @@ CREATE TABLE IF NOT EXISTS images (
     data BLOB NOT NULL              -- 图像二进制
 );
 CREATE INDEX IF NOT EXISTS idx_images_cam_cell ON images(camera, cell, ts);
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,               -- 首次发生时间
+    last_ts TEXT,                   -- 最近一次发生时间
+    recovered_ts TEXT,              -- 恢复时间（NULL=未恢复）
+    camera TEXT,                    -- 关联相机（可为空）
+    cell TEXT,                      -- 关联单元格（可为空）
+    code TEXT NOT NULL,             -- 事件码，如 CAMERA_OFFLINE / NG_BURST
+    message TEXT,                   -- 事件详情
+    status TEXT NOT NULL DEFAULT 'open'  -- open=未恢复 / recovered=已恢复 / acked=已处理
+);
+CREATE INDEX IF NOT EXISTS idx_events_camera_code_ts ON events(camera, code, ts);
+
+CREATE TABLE IF NOT EXISTS annotations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    image_id INTEGER,               -- 关联 images.id（删除图像时级联删除）
+    camera TEXT NOT NULL,
+    cell TEXT NOT NULL,
+    ts TEXT NOT NULL,               -- 标注时间
+    reviewer TEXT,                  -- 复核人
+    label TEXT NOT NULL,            -- 误判类别
+    description TEXT,               -- 误判原因 / 注意点
+    json TEXT NOT NULL,             -- 完整 XAnyLabeling 3.3.x JSON（imageData 内嵌图片）
+    FOREIGN KEY (image_id) REFERENCES images (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_annotations_image ON annotations(image_id);
+CREATE INDEX IF NOT EXISTS idx_annotations_cam_cell_ts ON annotations(camera, cell, ts);
 """
 
 
@@ -53,8 +84,19 @@ class Storage:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        self._migrate_schema()
         self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        """为旧库补齐后加的列（CREATE TABLE IF NOT EXISTS 不会改已有表）。"""
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(samples)")}
+        for name, ddl_type in (("lower_limit", "REAL"),
+                               ("upper_limit", "REAL"),
+                               ("spec_version", "INTEGER")):
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE samples ADD COLUMN {name} {ddl_type}")
 
     def insert_sample(
         self,
@@ -63,6 +105,9 @@ class Storage:
         cell: str,
         raw,
         ok: bool | None,
+        lower_limit: float | None = None,
+        upper_limit: float | None = None,
+        spec_version: int | None = None,
     ) -> None:
         value = None
         try:
@@ -71,8 +116,11 @@ class Storage:
             pass
         with self._lock:
             self._conn.execute(
-                "INSERT INTO samples (ts, camera, cell, value, text, ok) VALUES (?,?,?,?,?,?)",
-                (ts.isoformat(timespec="milliseconds"), camera, cell, value, str(raw), ok),
+                "INSERT INTO samples"
+                " (ts, camera, cell, value, text, ok, lower_limit, upper_limit, spec_version)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (ts.isoformat(timespec="milliseconds"), camera, cell, value, str(raw), ok,
+                 lower_limit, upper_limit, spec_version),
             )
             self._conn.commit()
 
@@ -105,6 +153,123 @@ class Storage:
             )
             self._conn.commit()
         return width, height
+
+    def insert_event(
+        self,
+        ts: datetime,
+        code: str,
+        camera: str | None = None,
+        cell: str | None = None,
+        message: str = "",
+        status: str = "open",
+    ) -> int:
+        """记录一条异常事件（如相机断线、NG 突发），返回事件 id。"""
+        stamp = ts.isoformat(timespec="milliseconds")
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO events (ts, last_ts, camera, cell, code, message, status)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (stamp, stamp, camera, cell, code, message, status),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def query_events(
+        self,
+        camera: str | None = None,
+        code: str | None = None,
+        status: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 500,
+    ) -> list[tuple[int, str, str | None, str | None, str | None, str | None,
+                    str, str | None, str]]:
+        """返回 [(id, ts, last_ts, recovered_ts, camera, cell, code, message, status)]，按时间倒序。"""
+        sql = ("SELECT id, ts, last_ts, recovered_ts, camera, cell, code, message, status"
+               " FROM events")
+        where: list[str] = []
+        args: list = []
+        if camera:
+            where.append("camera=?")
+            args.append(camera)
+        if code:
+            where.append("code=?")
+            args.append(code)
+        if status:
+            where.append("status=?")
+            args.append(status)
+        if start:
+            where.append("ts>=?")
+            args.append(start.isoformat(timespec="milliseconds"))
+        if end:
+            where.append("ts<=?")
+            args.append(end.isoformat(timespec="milliseconds"))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            return self._conn.execute(sql, args).fetchall()
+
+    def insert_annotation(
+        self,
+        ts: datetime,
+        camera: str,
+        cell: str,
+        label: str,
+        json_text: str,
+        description: str = "",
+        reviewer: str | None = None,
+        image_id: int | None = None,
+    ) -> int:
+        """保存一条误判标注（json_text 为 XAnyLabeling 3.3.x 完整 JSON），返回标注 id。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO annotations"
+                " (image_id, camera, cell, ts, reviewer, label, description, json)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (image_id, camera, cell, ts.isoformat(timespec="milliseconds"),
+                 reviewer, label, description, json_text),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def query_annotations(
+        self,
+        camera: str | None = None,
+        cell: str | None = None,
+        image_id: int | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 500,
+    ) -> list[tuple[int, int | None, str, str, str, str | None, str,
+                    str | None, str]]:
+        """返回 [(id, image_id, camera, cell, ts, reviewer, label, description, json)]，按时间倒序。"""
+        sql = ("SELECT id, image_id, camera, cell, ts, reviewer, label, description, json"
+               " FROM annotations")
+        where: list[str] = []
+        args: list = []
+        if camera:
+            where.append("camera=?")
+            args.append(camera)
+        if cell:
+            where.append("cell=?")
+            args.append(cell)
+        if image_id is not None:
+            where.append("image_id=?")
+            args.append(image_id)
+        if start:
+            where.append("ts>=?")
+            args.append(start.isoformat(timespec="milliseconds"))
+        if end:
+            where.append("ts<=?")
+            args.append(end.isoformat(timespec="milliseconds"))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            return self._conn.execute(sql, args).fetchall()
 
     def query_images(
         self,
