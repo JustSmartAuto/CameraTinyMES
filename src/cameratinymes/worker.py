@@ -13,8 +13,8 @@ from datetime import datetime
 
 from .cogsocket import CogSocketClient, CogSocketError, parse_cells
 from .config import CameraConfig, CellConfig
-from .images import (compose_render, fetch_image, fetch_json, image_source_size,
-                     resolve_sources, scaled_url, to_jpeg)
+from .images import (cell_is_image, compose_render, fetch_image, fetch_json,
+                     image_source_size, resolve_sources, scaled_url, to_jpeg)
 from .storage import StorageBase
 from .videocodec import ImageStreamWriter
 
@@ -115,23 +115,22 @@ class CameraWorker:
         self._push("session", sid)
         await self._refresh_job()
 
-        # auto 单元格运行时自动识别：收到 HmiResult 时看 resolve_sources 能否拿到图像 URL。
-        # 能 → 视作图像单元格，走事件驱动下载；不能 → 按原来的数值/字符串处理。
-        # 这里先主动 queryCellResults 探一次 HmiResult（event 类型会返回完整 HmiResult），
-        # 探测出 auto 图像单元格后，把它们并入 event_cells / 从 poll_cells 移除。
+        # auto 单元格运行时自动识别：依据单元格自身的值是否为图像标记（❒Image），
+        # 而非 acqImageView——后者是整次拍照的采集视图，任何单元格的结果都带，
+        # 用它判断会把所有 auto 单元格误判为图像单元格。
         auto_cells = [c for c in self.cfg.cells if c.data_type == "auto"
                       and not c.is_image]
         auto_image_names: set[str] = set()
         if auto_cells:
             try:
-                # GET {sid}/result 返回完整 HmiResult（含 acqImageView）
+                # GET {sid}/result 返回完整 HmiResult（含 cells 各单元格的值）
                 first = await self.client.get(f"{sid}/result")
                 for c in auto_cells:
-                    if resolve_sources(first or {}, c.name):
+                    if cell_is_image(first or {}, c.name):
                         auto_image_names.add(c.name)
                 if auto_image_names:
                     log.info(
-                        "auto 单元格探测为图像源: %s （A0 等采集视图单元格）",
+                        "auto 单元格探测为图像单元格: %s （值为图像标记 ❒Image）",
                         ", ".join(auto_image_names),
                     )
             except Exception as exc:
@@ -163,9 +162,9 @@ class CameraWorker:
                     # 兜底：如果预探测漏了，首次事件时再补一次
                     if not detected and auto_cells:
                         detected = {c.name for c in auto_cells
-                                    if resolve_sources(hmi_result or {}, c.name)}
+                                    if cell_is_image(hmi_result or {}, c.name)}
                         if detected:
-                            log.info("auto 单元格事件触发探测为图像源: %s",
+                            log.info("auto 单元格事件触发探测为图像单元格: %s",
                                      ", ".join(detected))
 
                     for cell in event_cells:
