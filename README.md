@@ -93,7 +93,7 @@
 - 原始图与 A0 渲染图都按序列编码；旧版逐张 `images` 数据保持原样，查询与导出时自动合并两种来源
 - 删除按整片进行（片内帧互相依赖）：时间范围与分片重叠即整片删除，片内所有帧一并计数
 - 无 ffmpeg（或编码 / 入库失败）时自动回退为逐张 JPEG 写入 `images`，不丢数据
-- 依赖外部 `ffmpeg`（需含 `libsvtav1`），可用环境变量 `CAMERATINYMES_FFMPEG` 指定可执行文件路径
+- 依赖外部 `ffmpeg`（需含 `libsvtav1`）；启动时按 **环境变量 `CAMERATINYMES_FFMPEG` → `PATH` → 离线安装器默认目录（`%LOCALAPPDATA%\ffmpeg` / `%ProgramFiles%\ffmpeg`）→ 注册表 `PATH`** 的顺序自动定位，用 `silent安装器_2606231854/ffmpeg_installer` 装好后无需手工配置（进程环境是安装前的旧值也能找到，首次启动前请先关闭已运行的旧程序）
 - 崩溃 / 断电最多丢失最后一个未封片（≤30 帧或 ≤5 秒）；断开相机与关闭程序都会强制封片
 
 ## 数据库连接（MariaDB 优先，SQLite 兜底）

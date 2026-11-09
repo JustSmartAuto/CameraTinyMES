@@ -262,7 +262,7 @@
       <li>删除按<strong>整片</strong>进行：时间范围与分片重叠即整片删除（片内帧互相依赖）</li>
       <li>无 ffmpeg 或编码 / 入库失败时自动回退逐张 JPEG 写入 <code>images</code>，不丢数据</li>
       <li>崩溃 / 断电最多丢失最后一个未封片（≤30 帧或 ≤5 秒）；断开相机与关闭程序都会强制封片</li>
-      <li>依赖外部 <code>ffmpeg</code>（需含 <code>libsvtav1</code>），可用环境变量 <code>CAMERATINYMES_FFMPEG</code> 指定路径</li>
+      <li>依赖外部 <code>ffmpeg</code>（需含 <code>libsvtav1</code>）；启动时按 <strong>环境变量 <code>CAMERATINYMES_FFMPEG</code> → <code>PATH</code> → 离线安装器默认目录（<code>%LOCALAPPDATA%\ffmpeg</code> / <code>%ProgramFiles%\ffmpeg</code>）→ 注册表 <code>PATH</code></strong> 的顺序自动定位，装好即可用，无需手工配置</li>
     </ul>
 
     <h2 id="readme-label">误判标注（人工复核）</h2>

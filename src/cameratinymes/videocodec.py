@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -25,7 +26,65 @@ AV1_CRF = 32
 AV1_PRESET = 10
 FLUSH_INTERVAL = 0.5         # 后台巡检查间隔
 
-FFMPEG = os.environ.get("CAMERATINYMES_FFMPEG") or shutil.which("ffmpeg")
+
+def _installer_candidates():
+    """离线安装器的默认落点：%LOCALAPPDATA%\\ffmpeg 与 %ProgramFiles%\\ffmpeg。"""
+    roots = []
+    for env in ("LOCALAPPDATA", "ProgramFiles"):
+        base = os.environ.get(env)
+        if base:
+            roots.append(Path(base) / "ffmpeg")
+    for root in roots:
+        yield root / "bin" / "ffmpeg.exe"
+        if root.is_dir():
+            for sub in sorted(root.iterdir(), reverse=True):
+                if sub.is_dir():
+                    yield sub / "bin" / "ffmpeg.exe"
+
+
+def _registry_path_entries():
+    """进程环境可能早于安装器启动，补读注册表里的用户 / 系统 PATH。"""
+    if sys.platform != "win32":
+        return []
+    import winreg
+
+    entries: list[str] = []
+    for hive, key in (
+        (winreg.HKEY_CURRENT_USER, r"Environment"),
+        (winreg.HKEY_LOCAL_MACHINE,
+         r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+    ):
+        try:
+            with winreg.OpenKey(hive, key) as reg:
+                value, _ = winreg.QueryValueEx(reg, "PATH")
+            entries.extend(os.path.expandvars(value).split(os.pathsep))
+        except OSError:
+            pass
+    return entries
+
+
+def find_ffmpeg() -> str | None:
+    """定位 ffmpeg：环境变量 → PATH → 安装器默认目录 → 注册表 PATH。"""
+    custom = os.environ.get("CAMERATINYMES_FFMPEG")
+    if custom and Path(custom).is_file():
+        return custom
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    for path in _installer_candidates():
+        if path.is_file():
+            return str(path)
+    exe = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    for entry in _registry_path_entries():
+        entry = entry.strip().strip('"')
+        if entry and (Path(entry) / exe).is_file():
+            return str(Path(entry) / exe)
+    return None
+
+
+FFMPEG = find_ffmpeg()
+if FFMPEG:
+    log.info("AV1 编码器 ffmpeg: %s", FFMPEG)
 
 
 def available() -> bool:
