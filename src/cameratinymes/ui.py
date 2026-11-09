@@ -86,6 +86,25 @@ class Tooltip:
             self._tip = None
 
 
+def _apply_icon(win: tk.Tk | tk.Toplevel) -> None:
+    """给窗口设置 assets/app_icon.ico（源码运行与 PyInstaller 打包均适用）。"""
+    icon = charts.ASSETS / "app_icon.ico"
+    if not icon.exists():
+        return
+    try:
+        win.iconbitmap(str(icon))
+    except tk.TclError:
+        pass
+
+
+class _IconToplevel(tk.Toplevel):
+    """对话框基类：统一图标，避免 Windows 上显示 Tk 默认羽毛图标。"""
+
+    def __init__(self, master: tk.Misc | None = None, **kw):
+        super().__init__(master, **kw)
+        _apply_icon(self)
+
+
 class CameraPanel(tk.Frame):
     """单相机面板（BeOS 窗口）：黄色标题页签、白色内容区、药丸按钮。"""
 
@@ -184,6 +203,7 @@ class MonitorApp:
         self._db_ok: bool | None = None
 
         self.root = tk.Tk()
+        self._apply_window_icon()
         self.root.title("CameraTinyMES — Cognex In-Sight 迷你制造执行系统")
         self.root.geometry("1100x700")
         self.root.minsize(1060, 600)
@@ -195,6 +215,17 @@ class MonitorApp:
         self._start_asyncio_thread()
 
     # ---------- UI 构建 ----------
+
+    def _apply_window_icon(self) -> None:
+        """设置主窗口图标，并尝试把 ICO 设为后续 Toplevel 的默认图标。"""
+        _apply_icon(self.root)
+        icon = charts.ASSETS / "app_icon.ico"
+        if not icon.exists():
+            return
+        try:
+            self.root.iconbitmap(default=str(icon))
+        except tk.TclError:
+            pass
 
     def _build_ui(self) -> None:
         toolbar = theme.window_frame(self.root)
@@ -602,6 +633,7 @@ class MonitorApp:
     def _finish_close(self) -> None:
         self._db_stop.set()
         self.loop.call_soon_threadsafe(self.loop.stop)
+        self.monitor.writer.close()   # 封存最后一批 AV1 分片
         self.storage.close()
         save_config(self.data_dir, self.cameras)
         self.root.destroy()
@@ -617,7 +649,7 @@ _CELL_TEXT_HINT = (
     "数据类型：auto（未知·运行时推断）/ int / float / string / bool / image（图像）/ other\n"
     "记录模式：simple（仅记录·不判定）/ advanced（记录+阈值判定）\n"
     "上下限仅对 advanced + int/float/auto 有效；simple 模式忽略阈值\n"
-    "image 类型：从相机下载图像存 BLOB 并嵌入 xlsx；A0 另外保存结果渲染图\n"
+    "image 类型：从相机下载图像，按 AV1 帧序列分片入库并嵌入 xlsx；无 ffmpeg 时回退逐张 BLOB；A0 另外保存结果渲染图\n"
     "示例：C36,float,advanced,event,0,175,182,mm,焊缝宽度\n"
     "      A0,image,simple,event,0,,,,,\n"
     "      Status,string,simple,event,0,,,,,判定结果"
@@ -697,7 +729,7 @@ def _text_to_cells(text: str) -> list[CellConfig]:
     return cells
 
 
-class CellFormDialog(tk.Toplevel):
+class CellFormDialog(_IconToplevel):
     """单单元格编辑表单：上下限仅对数值类型可用。"""
 
     def __init__(self, parent, cell: CellConfig | None = None):
@@ -844,7 +876,7 @@ class CellFormDialog(tk.Toplevel):
         self.destroy()
 
 
-class CameraSelectDialog(tk.Toplevel):
+class CameraSelectDialog(_IconToplevel):
     """相机选择对话框：下拉框可直接选择，也可手动输入相机名。"""
 
     def __init__(self, parent, camera_names: list[str]):
@@ -947,7 +979,7 @@ class _CellChecklist(tk.Frame):
         return [c for c, v in self._vars.items() if v.get()]
 
 
-class DeleteDataDialog(tk.Toplevel):
+class DeleteDataDialog(_IconToplevel):
     """删除相机数据：选择相机 + 勾选单元格。未勾选单元格则删除该相机全部数据。"""
 
     def __init__(self, parent, camera_names: list[str], storage):
@@ -1004,7 +1036,7 @@ class DeleteDataDialog(tk.Toplevel):
         self.destroy()
 
 
-class ExportDialog(tk.Toplevel):
+class ExportDialog(_IconToplevel):
     """选择性导出：相机 + 单元格 + 时间范围。"""
 
     def __init__(self, parent, camera_names: list[str], storage):
@@ -1080,7 +1112,7 @@ class ExportDialog(tk.Toplevel):
         self.destroy()
 
 
-class ChartCellSelectDialog(tk.Toplevel):
+class ChartCellSelectDialog(_IconToplevel):
     """趋势图单元格选择：文本输入框（单个）+ 多选框（批量）。"""
 
     def __init__(self, parent, camera_name: str, storage):
@@ -1127,7 +1159,7 @@ class ChartCellSelectDialog(tk.Toplevel):
         self.destroy()
 
 
-class CellEditorDialog(tk.Toplevel):
+class CellEditorDialog(_IconToplevel):
     """交互式单元格编辑器：表格 + 增删改 + 文本编辑回退。"""
 
     COLUMNS = ("name", "type", "record", "mode", "interval", "lower", "upper", "unit", "note")
@@ -1245,7 +1277,7 @@ class CellEditorDialog(tk.Toplevel):
         self.destroy()
 
 
-class CellDialog(tk.Toplevel):
+class CellDialog(_IconToplevel):
     """多行文本编辑对话框。"""
 
     def __init__(self, parent, title: str, hint: str, initial: str):
@@ -1274,7 +1306,7 @@ class CellDialog(tk.Toplevel):
         self.destroy()
 
 
-class ChartWindow(tk.Toplevel):
+class ChartWindow(_IconToplevel):
     """内嵌 matplotlib 图表窗口。"""
 
     def __init__(self, parent, fig, title: str):

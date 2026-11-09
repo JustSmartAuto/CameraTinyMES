@@ -123,6 +123,7 @@
   <div class="deskbar-item"><a href="#readme">README — 项目说明</a></div>
   <div class="deskbar-item"><a href="#readme-feature">功能与采样机制</a></div>
   <div class="deskbar-item"><a href="#readme-db">数据库连接（MariaDB）</a></div>
+  <div class="deskbar-item"><a href="#readme-av1">AV1 帧序列压缩</a></div>
   <div class="deskbar-item"><a href="#readme-label">误判标注</a></div>
   <div class="deskbar-item"><a href="#dbreport">数据库分析报告</a></div>
   <div class="deskbar-item"><a href="#dbreport-design">设计特点分析</a></div>
@@ -199,16 +200,18 @@
       <tr><td>打包</td><td>PyInstaller 单文件 exe，logo 使用 <code>assets/app_icon.ico</code></td></tr>
     </table>
 
-    <h2>数据模型（SQLite）</h2>
+    <h2>数据模型（SQLite / MariaDB 同构）</h2>
     <table>
-      <tr><th>表</th><th>说明</th></tr>
-      <tr><td><code>products</code></td><td>产品型号 / 配方</td></tr>
-      <tr><td><code>work_orders</code></td><td>工单（型号、计划数量、状态）</td></tr>
-      <tr><td><code>records</code></td><td>采样记录：时间戳、相机、单元格、值、OK/NG、工单/批次关联</td></tr>
-      <tr><td><code>cameras</code> / <code>cells</code></td><td>相机与单元格配置</td></tr>
-      <tr><td>其他</td><td>NG 明细、班次、操作日志等按需扩展</td></tr>
+      <tr><th>表</th><th>说明</th><th>关键字段</th></tr>
+      <tr><td><code>samples</code></td><td>采样值</td><td><code>ts</code>、<code>camera</code>、<code>cell</code>、<code>value</code>、<code>text</code>、<code>ok</code>、<code>lower_limit</code> / <code>upper_limit</code> / <code>spec_version</code>（判定快照）</td></tr>
+      <tr><td><code>images</code></td><td>单帧图像 BLOB（旧数据与编码回退）</td><td><code>ts</code>、<code>camera</code>、<code>cell</code>、<code>kind</code>（<code>image</code> / <code>render</code>）、<code>mime</code>、<code>width</code>、<code>height</code>、<code>data</code></td></tr>
+      <tr><td><code>image_streams</code></td><td>AV1 帧序列分片（IVF 码流）</td><td><code>ts_start</code> / <code>ts_end</code>、<code>camera</code>、<code>cell</code>、<code>kind</code>、<code>codec</code>、<code>container</code>、<code>frame_count</code>、<code>size_bytes</code>、<code>data</code></td></tr>
+      <tr><td><code>image_frames</code></td><td>分片帧索引</td><td><code>stream_id</code>、<code>frame_index</code>、<code>ts</code>、<code>camera</code>、<code>cell</code>、<code>kind</code></td></tr>
+      <tr><td><code>events</code></td><td>轻量异常事件（断线 / NG 突发）</td><td><code>camera</code>、<code>cell</code>、<code>code</code>、首次 / 末次发生、恢复时间、状态</td></tr>
+      <tr><td><code>annotations</code></td><td>误判人工复核标注</td><td><code>image_id</code>、<code>label</code>、<code>description</code>、<code>json</code>（XAnyLabeling 3.3.x）</td></tr>
     </table>
-    <blockquote>具体表结构以 <code>src/</code> 实际代码为准。</blockquote>
+    <p>相机与单元格配置存于 <code>config/cameras.json</code>，不入库。</p>
+    <blockquote>具体表结构以 <code>src/cameratinymes/storage.py</code> 实际代码为准。</blockquote>
 
     <h2 id="readme-db">数据库连接（MariaDB 优先，SQLite 兜底）</h2>
     <p>工控机可能已通过 <code>reference/mariadb_installer.py</code> 安装 MariaDB（一键离线安装器，内嵌 MariaDB 13.0.2 MSI 静默安装）。安装器的固定参数即本软件的默认连接参数：</p>
@@ -226,7 +229,7 @@
       <li><strong>可用</strong>：所有采样记录、图像与标注数据写入 MariaDB，支持多客户端并发访问与集中汇总</li>
       <li><strong>不可用</strong>：自动回退到 <code>sqlite3</code> 单文件数据库并记录日志，<strong>保证单机最小可用性</strong>，不因数据库缺失影响产线采集</li>
     </ol>
-    <p>两套后端共用同一套表结构与数据访问接口，对上层功能透明；运行中 MariaDB 断连时当前批次数据先在本地缓存，恢复后补写。</p>
+    <p>两套后端共用同一套表结构与数据访问接口，对上层功能透明；运行中 MariaDB 断连时驱动自动重连并重试当前写入，不做本地缓存补写。</p>
     <table>
       <tr><th>配置项</th><th>说明</th><th>默认值</th></tr>
       <tr><td><code>db_backend</code></td><td><code>auto</code>（MariaDB 优先，回退 SQLite）/ <code>mariadb</code> / <code>sqlite</code></td><td><code>auto</code></td></tr>
@@ -243,6 +246,24 @@
       <tr><td><code>poll</code></td><td>软件定时轮询</td><td>每隔 <code>poll_interval</code> 秒调用 <code>queryCellResults</code> 拉取单元格当前值</td></tr>
     </table>
     <p><strong>GigE 工业相机</strong>由软件端取像：相机帧回调 → 触发采样与判定逻辑 → 结果落库（OK/NG 判定在软件内完成，阈值配置与智能相机共用一套）。</p>
+
+    <h2 id="readme-av1">AV1 帧序列压缩（A0 连续图像）</h2>
+    <p>产线上同工位的 A0 图像连续且变化很小，逐张 JPEG 存储占用大。软件把同一「相机 + 单元格 + 类型」的连续帧按 GOP 打成 <strong>AV1（IVF）分片</strong>后入库，原始图与 A0 渲染图都适用。</p>
+    <table>
+      <tr><th>参数 / 行为</th><th>值</th></tr>
+      <tr><td>分片上限</td><td>30 帧（同时是 GOP 长度，片内首帧为关键帧）</td></tr>
+      <tr><td>空闲封片</td><td>5 秒无新帧即封片</td></tr>
+      <tr><td>编码器</td><td>SVT-AV1 <code>preset 10</code> + <code>CRF 32</code>，<code>yuv420p</code></td></tr>
+      <tr><td>实测（OP20-58 真实 30 帧）</td><td>1.39 MB JPEG → <strong>213 KB</strong> AV1（<strong>6.5×</strong>），编码 0.53 s，解码 0.17 s</td></tr>
+    </table>
+    <ul>
+      <li>单帧回取：定位 <code>image_frames</code> 后解码所属分片，最多解码 30 帧，随机访问可控</li>
+      <li>旧版逐张 <code>images</code> 数据保持原样，查询与 xlsx 导出时自动合并两种来源</li>
+      <li>删除按<strong>整片</strong>进行：时间范围与分片重叠即整片删除（片内帧互相依赖）</li>
+      <li>无 ffmpeg 或编码 / 入库失败时自动回退逐张 JPEG 写入 <code>images</code>，不丢数据</li>
+      <li>崩溃 / 断电最多丢失最后一个未封片（≤30 帧或 ≤5 秒）；断开相机与关闭程序都会强制封片</li>
+      <li>依赖外部 <code>ffmpeg</code>（需含 <code>libsvtav1</code>），可用环境变量 <code>CAMERATINYMES_FFMPEG</code> 指定路径</li>
+    </ul>
 
     <h2 id="readme-label">误判标注（人工复核）</h2>
     <p>复核流程：从生产记录中筛选误判图片 → 人工在图像上绘制方框 ROI 标记误判位置 → 填写误判原因 / 注意点 → 保存标注文件，供其他视觉算法训练学习误判区分。</p>
@@ -455,13 +476,13 @@ SerialNumbers        23,665   █
     <h2 id="dbreport-compare">5. 对 CameraTinyMES 的对比与启示</h2>
     <table>
       <tr><th>维度</th><th>对标项目（MesServer）</th><th>CameraTinyMES 现状</th><th>启示</th></tr>
-      <tr><td>定位</td><td>全厂级 MES 全链路</td><td>相机数据轻量采集（samples/images 两表）</td><td>定位不同，<strong>不应照搬全量 schema</strong></td></tr>
-      <tr><td>参数记录</td><td>ParamRecords 带<strong>规格快照 + 版本号</strong></td><td>samples 仅存 value/result</td><td><strong>建议采纳</strong>：samples 增加阈值/版本快照列</td></tr>
+      <tr><td>定位</td><td>全厂级 MES 全链路</td><td>相机数据轻量采集（6 张表）</td><td>定位不同，<strong>不应照搬全量 schema</strong></td></tr>
+      <tr><td>参数记录</td><td>ParamRecords 带<strong>规格快照 + 版本号</strong></td><td>samples 已加 lower/upper/spec_version 快照</td><td>已采纳，阈值改判后历史仍可追溯</td></tr>
       <tr><td>主键</td><td>TEXT GUID（分布式友好，但无序）</td><td>INTEGER 自增</td><td>单机场景自增更优，保持现状</td></tr>
       <tr><td>数值存储</td><td>decimal→TEXT（EF SQLite 局限）</td><td>REAL 原生存储</td><td>无此问题</td></tr>
       <tr><td>判定模式</td><td>ParameterSpecs 版本化 + JudgementMode</td><td>上下限硬编码在单元格配置</td><td>中期可引入"规格版本"概念</td></tr>
-      <tr><td>事件追溯</td><td>ExceptionEvents（CorrelationKey + 三段处理）</td><td>无</td><td>相机断线/超差可建轻量 events 表</td></tr>
-      <tr><td>图像</td><td>未涉及（对接 PLC 为主）</td><td>images 表 + A0 渲染合成</td><td>CameraTinyMES 的差异化能力，对标项目缺失</td></tr>
+      <tr><td>事件追溯</td><td>ExceptionEvents（CorrelationKey + 三段处理）</td><td>events 轻量表已建</td><td>采集端写入待接入</td></tr>
+      <tr><td>图像</td><td>未涉及（对接 PLC 为主）</td><td>AV1 帧序列分片 + A0 渲染合成</td><td>CameraTinyMES 的差异化能力，对标项目缺失</td></tr>
       <tr><td>部署</td><td>多 Provider（SqlServer/MySQL/SQLite）</td><td>SQLite 单文件</td><td>单机 SQLite 足够；多客户端汇聚时可参考 Provider 抽象</td></tr>
     </table>
     <p><strong>优先级建议</strong>（投入产出比排序）：</p>

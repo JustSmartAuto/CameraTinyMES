@@ -76,6 +76,38 @@ CREATE TABLE IF NOT EXISTS annotations (
 );
 CREATE INDEX IF NOT EXISTS idx_annotations_image ON annotations(image_id);
 CREATE INDEX IF NOT EXISTS idx_annotations_cam_cell_ts ON annotations(camera, cell, ts);
+
+CREATE TABLE IF NOT EXISTS image_streams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_start TEXT NOT NULL,         -- 首帧时间
+    ts_end TEXT NOT NULL,           -- 末帧时间
+    camera TEXT NOT NULL,
+    cell TEXT NOT NULL,
+    kind TEXT NOT NULL,             -- image=原始图 render=结果渲染图
+    codec TEXT NOT NULL,            -- av1
+    container TEXT NOT NULL,        -- ivf
+    frame_count INTEGER NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    size_bytes INTEGER,             -- 压缩后码流大小
+    data BLOB NOT NULL              -- AV1(IVF) 码流
+);
+CREATE INDEX IF NOT EXISTS idx_streams_cam_cell_ts ON image_streams(camera, cell, kind, ts_start);
+
+CREATE TABLE IF NOT EXISTS image_frames (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stream_id INTEGER NOT NULL,
+    frame_index INTEGER NOT NULL,   -- 片内序号，从 0 开始
+    ts TEXT NOT NULL,
+    camera TEXT NOT NULL,
+    cell TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    FOREIGN KEY (stream_id) REFERENCES image_streams (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_frames_cam_cell_ts ON image_frames(camera, cell, kind, ts);
+CREATE INDEX IF NOT EXISTS idx_frames_stream ON image_frames(stream_id, frame_index);
 """
 
 # MariaDB 版 schema：与 SQLite 版字段一一对应，仅类型/自增语法不同
@@ -139,6 +171,41 @@ CREATE TABLE IF NOT EXISTS annotations (
     CONSTRAINT fk_annotations_image FOREIGN KEY (image_id)
         REFERENCES images (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS image_streams (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    ts_start VARCHAR(32) NOT NULL,
+    ts_end VARCHAR(32) NOT NULL,
+    camera VARCHAR(64) NOT NULL,
+    cell VARCHAR(64) NOT NULL,
+    kind VARCHAR(16) NOT NULL,
+    codec VARCHAR(16) NOT NULL,
+    container VARCHAR(16) NOT NULL,
+    frame_count INT NOT NULL,
+    width INT NULL,
+    height INT NULL,
+    size_bytes INT NULL,
+    data LONGBLOB NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_streams_cam_cell_ts (camera, cell, kind, ts_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS image_frames (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    stream_id BIGINT NOT NULL,
+    frame_index INT NOT NULL,
+    ts VARCHAR(32) NOT NULL,
+    camera VARCHAR(64) NOT NULL,
+    cell VARCHAR(64) NOT NULL,
+    kind VARCHAR(16) NOT NULL,
+    width INT NULL,
+    height INT NULL,
+    PRIMARY KEY (id),
+    KEY idx_frames_cam_cell_ts (camera, cell, kind, ts),
+    KEY idx_frames_stream (stream_id, frame_index),
+    CONSTRAINT fk_frames_stream FOREIGN KEY (stream_id)
+        REFERENCES image_streams (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
@@ -176,6 +243,11 @@ class _SqliteLikeConnection:
 
     def commit(self) -> None:
         self._raw.commit()
+
+    def executemany(self, sql: str, seq):
+        cur = self._raw.cursor()
+        cur.executemany(sql, seq)
+        return cur
 
     def close(self) -> None:
         self._raw.close()
@@ -216,6 +288,18 @@ class StorageBase:
             rows = cur.fetchall()
             cur.close()
             return rows
+
+    def _execute_many(self, sql: str, seq) -> int:
+        """批量写语句并提交一次，返回影响行数。"""
+        seq = list(seq)
+        if not seq:
+            return 0
+        with self._lock:
+            cur = self._conn.executemany(self._sql(sql), seq)
+            count = cur.rowcount
+            cur.close()
+            self._conn.commit()
+            return count
 
     def health_check(self) -> bool:
         """轻量连通性检查：执行 SELECT 1，失败返回 False（不抛异常）。"""
@@ -377,7 +461,7 @@ class StorageBase:
     def delete_images(self, camera: str, cell: str | None = None,
                       start: datetime | None = None,
                       end: datetime | None = None) -> int:
-        """删除图像数据，返回删除行数。"""
+        """删除图像数据，返回删除行数（含整片删除的 AV1 帧）。"""
         sql = "DELETE FROM images WHERE camera=?"
         args: list = [camera]
         if cell:
@@ -389,7 +473,90 @@ class StorageBase:
         if end:
             sql += " AND ts<=?"
             args.append(end.isoformat(timespec="milliseconds"))
-        return self._execute(sql, tuple(args))[1]
+        deleted = self._execute(sql, tuple(args))[1]
+
+        # AV1 分片按整片删除：片内帧互相依赖，不能只删其中几帧
+        ssql = "SELECT id, frame_count FROM image_streams WHERE camera=?"
+        sargs: list = [camera]
+        if cell:
+            ssql += " AND cell=?"
+            sargs.append(cell)
+        if start:
+            ssql += " AND ts_end>=?"
+            sargs.append(start.isoformat(timespec="milliseconds"))
+        if end:
+            ssql += " AND ts_start<=?"
+            sargs.append(end.isoformat(timespec="milliseconds"))
+        streams = self._fetchall(ssql, tuple(sargs))
+        if streams:
+            ids = [r[0] for r in streams]
+            marks = ",".join("?" * len(ids))
+            deleted += sum(r[1] for r in streams)
+            self._execute(f"DELETE FROM image_frames WHERE stream_id IN ({marks})", tuple(ids))
+            self._execute(f"DELETE FROM image_streams WHERE id IN ({marks})", tuple(ids))
+        return deleted
+
+    # ---------- AV1 帧序列 ----------
+
+    def insert_image_stream(
+        self,
+        camera: str,
+        cell: str,
+        kind: str,
+        frames: list[tuple[datetime, int | None, int | None]],
+        data: bytes,
+        codec: str = "av1",
+        container: str = "ivf",
+    ) -> int:
+        """写入一个 AV1 分片，frames=[(ts, width, height)] 按帧序，返回分片 id。"""
+        ts_start = frames[0][0].isoformat(timespec="milliseconds")
+        ts_end = frames[-1][0].isoformat(timespec="milliseconds")
+        width, height = frames[0][1], frames[0][2]
+        stream_id, _ = self._execute(
+            "INSERT INTO image_streams"
+            " (ts_start, ts_end, camera, cell, kind, codec, container,"
+            "  frame_count, width, height, size_bytes, data)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (ts_start, ts_end, camera, cell, kind, codec, container,
+             len(frames), width, height, len(data), data),
+        )
+        self._execute_many(
+            "INSERT INTO image_frames"
+            " (stream_id, frame_index, ts, camera, cell, kind, width, height)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            [(int(stream_id), i, ts.isoformat(timespec="milliseconds"),
+              camera, cell, kind, w, h)
+             for i, (ts, w, h) in enumerate(frames)],
+        )
+        return int(stream_id)
+
+    def query_stream_frames(
+        self,
+        camera: str,
+        cell: str,
+        kind: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[tuple[str, str, int, int, int | None, int | None]]:
+        """返回 [(ts, kind, stream_id, frame_index, width, height)]，按时间升序。"""
+        sql = ("SELECT ts, kind, stream_id, frame_index, width, height"
+               " FROM image_frames WHERE camera=? AND cell=?")
+        args: list = [camera, cell]
+        if kind:
+            sql += " AND kind=?"
+            args.append(kind)
+        if start:
+            sql += " AND ts>=?"
+            args.append(start.isoformat(timespec="milliseconds"))
+        if end:
+            sql += " AND ts<=?"
+            args.append(end.isoformat(timespec="milliseconds"))
+        sql += " ORDER BY ts"
+        return self._fetchall(sql, tuple(args))
+
+    def get_image_stream(self, stream_id: int) -> bytes | None:
+        rows = self._fetchall("SELECT data FROM image_streams WHERE id=?", (stream_id,))
+        return bytes(rows[0][0]) if rows else None
 
     # ---------- 事件 ----------
 
@@ -737,7 +904,9 @@ def _embed_image(ws, row: int, data: bytes, max_width: int = 480) -> bool:
 def _append_image_sheets(wb, storage: Storage, camera: str, cell: str, note: str,
                          bold, start, end) -> None:
     """图像单元格：原始图与渲染图各生成一个嵌入式工作表。"""
-    rows = storage.query_images(camera, cell, start=start, end=end)
+    from .videocodec import load_images
+
+    rows = load_images(storage, camera, cell, start=start, end=end)
     for kind, title in (("image", cell[:31]), ("render", f"{cell}渲染图"[:31])):
         items = [r for r in rows if r[1] == kind]
         if not items:

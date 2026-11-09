@@ -16,6 +16,7 @@ from .config import CameraConfig, CellConfig
 from .images import (compose_render, fetch_image, fetch_json, image_source_size,
                      resolve_sources, scaled_url, to_jpeg)
 from .storage import StorageBase
+from .videocodec import ImageStreamWriter
 
 log = logging.getLogger(__name__)
 
@@ -47,9 +48,11 @@ def judge(value, cell: CellConfig) -> bool | None:
 class CameraWorker:
     """驱动单台相机的连接-订阅-落库循环。"""
 
-    def __init__(self, cfg: CameraConfig, storage: StorageBase, events: queue.Queue):
+    def __init__(self, cfg: CameraConfig, storage: StorageBase, events: queue.Queue,
+                 writer: ImageStreamWriter | None = None):
         self.cfg = cfg
         self.storage = storage
+        self.writer = writer      # AV1 帧序列写入器；None 时逐张 JPEG 入库
         self.events = events  # UI 侧队列，消息为 (camera, kind, payload)
         self.client = CogSocketClient(cfg.host, cfg.port, cfg.username, cfg.password)
         self._task: asyncio.Task | None = None
@@ -233,8 +236,10 @@ class CameraWorker:
 
         try:
             raw_jpeg, width, height = await asyncio.to_thread(to_jpeg, data)
-            self.storage.insert_image(ts, self.cfg.name, cell.name, "image",
-                                      raw_jpeg, "image/jpeg")
+            if self.writer is None or not self.writer.add_frame(
+                    ts, self.cfg.name, cell.name, "image", raw_jpeg, width, height):
+                self.storage.insert_image(ts, self.cfg.name, cell.name, "image",
+                                          raw_jpeg, "image/jpeg")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -246,8 +251,10 @@ class CameraWorker:
             try:
                 render_jpeg, width, height = await asyncio.to_thread(
                     compose_render, data, graphics, src_w)
-                self.storage.insert_image(ts, self.cfg.name, cell.name, "render",
-                                          render_jpeg, "image/jpeg")
+                if self.writer is None or not self.writer.add_frame(
+                        ts, self.cfg.name, cell.name, "render", render_jpeg, width, height):
+                    self.storage.insert_image(ts, self.cfg.name, cell.name, "render",
+                                              render_jpeg, "image/jpeg")
                 render_ok = True
             except asyncio.CancelledError:
                 raise
@@ -270,6 +277,7 @@ class Monitor:
 
     def __init__(self, storage: StorageBase):
         self.storage = storage
+        self.writer = ImageStreamWriter(storage)
         self.events: queue.Queue = queue.Queue(maxsize=1000)
         self.workers: dict[str, CameraWorker] = {}
 
@@ -277,7 +285,7 @@ class Monitor:
         worker = self.workers.get(cfg.name)
         if worker and worker.running:
             return
-        worker = CameraWorker(cfg, self.storage, self.events)
+        worker = CameraWorker(cfg, self.storage, self.events, self.writer)
         self.workers[cfg.name] = worker
         await worker.start()
 
@@ -285,6 +293,8 @@ class Monitor:
         worker = self.workers.pop(name, None)
         if worker:
             await worker.stop()
+        # 相机断开时立即封片，避免尾部帧滞留内存
+        await asyncio.to_thread(self.writer.flush_camera, name)
         try:
             self.events.put_nowait((name, "disconnected", None))
         except queue.Full:

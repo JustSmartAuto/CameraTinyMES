@@ -65,22 +65,36 @@
 
 ## 数据模型（SQLite）
 
-当前为采样、图像、事件、标注四张表；相机与单元格配置存于 `config/cameras.json`，不入库。
+当前为采样、图像、AV1 分片、帧索引、事件、标注六张表；相机与单元格配置存于 `config/cameras.json`，不入库。
 
 | 表 | 说明 | 关键字段 |
 |---|---|---|
 | `samples` | 采样记录（含判定依据快照） | `ts` 时间戳、`camera` 相机、`cell` 单元格、`value` 数值、`text` 原始文本、`ok` 判定（1=OK / 0=NG / NULL=无阈值）、`lower_limit` / `upper_limit` 判定时上下限快照、`spec_version` 规格版本（预留） |
-| `images` | 图像 BLOB | `ts`、`camera`、`cell`、`kind`（`image`=原图 / `render`=结果渲染图）、`mime`、`width`、`height`、`data` |
+| `images` | 单帧图像 BLOB（旧数据与编码回退） | `ts`、`camera`、`cell`、`kind`（`image`=原图 / `render`=结果渲染图）、`mime`、`width`、`height`、`data` |
+| `image_streams` | AV1 帧序列分片（IVF 码流） | `ts_start` / `ts_end` 分片首末帧时间、`camera`、`cell`、`kind`、`codec`、`container`、`frame_count`、`width`、`height`、`size_bytes`、`data` |
+| `image_frames` | 分片帧索引 | `stream_id`（关联 `image_streams.id`，级联删除）、`frame_index` 片内序号、`ts`、`camera`、`cell`、`kind`、`width`、`height` |
 | `events` | 异常事件（轻量） | `ts` 首次发生、`last_ts` 最近发生、`recovered_ts` 恢复时间、`camera`、`cell`、`code` 事件码、`message`、`status`（`open` / `recovered` / `acked`） |
 | `annotations` | 误判人工复核标注 | `image_id`（关联 `images.id`，随图像级联删除）、`camera`、`cell`、`ts`、`reviewer` 复核人、`label` 误判类别、`description` 误判原因/注意点、`json` 完整 XAnyLabeling 3.3.x JSON（`imageData` 内嵌图片） |
 
-索引：`idx_samples_cam_cell(camera, cell, ts)`、`idx_images_cam_cell(camera, cell, ts)`、`idx_events_camera_code_ts(camera, code, ts)`、`idx_annotations_image(image_id)`、`idx_annotations_cam_cell_ts(camera, cell, ts)`。
+索引：`idx_samples_cam_cell(camera, cell, ts)`、`idx_images_cam_cell(camera, cell, ts)`、`idx_streams_cam_cell_ts(camera, cell, kind, ts_start)`、`idx_frames_cam_cell_ts(camera, cell, kind, ts)`、`idx_frames_stream(stream_id, frame_index)`、`idx_events_camera_code_ts(camera, code, ts)`、`idx_annotations_image(image_id)`、`idx_annotations_cam_cell_ts(camera, cell, ts)`。
 
 `lower_limit` / `upper_limit` 在写入采样时记录当时的判定阈值（仅 `advanced` + 数值类型），后续修改单元格配置不影响历史判定依据；`events` 对应对标系统 `ExceptionEvents` 的简化版，表结构已就绪，采集端断线 / NG 突发写入待接入；`spec_version` 对应 `ParameterSpecs.Version`，暂为预留列。
 
 旧库升级：`Storage` 初始化时通过 `PRAGMA table_info` 检测缺失列并自动 `ALTER TABLE` 补齐，已有采样数据不受影响。
 
 > 具体表结构以 `src/cameratinymes/storage.py` 实际代码为准。
+
+### AV1 帧序列压缩（A0 连续图像）
+
+产线上同工位的 A0 图像连续且变化很小，逐张 JPEG 存储占用大。软件把同一「相机 + 单元格 + 类型」的连续帧按 GOP 打成 AV1（IVF）分片后入库：
+
+- 每片最多 **30 帧**，或空闲 **5 秒**即封片；片内首帧为关键帧，取单帧最多解码 30 帧
+- 编码参数：SVT-AV1 `preset 10` + `CRF 32`；实测 OP20-58 真实序列压缩率约 **6.5×**（1.39 MB → 213 KB / 30 帧），编码约 0.53 s、解码约 0.17 s
+- 原始图与 A0 渲染图都按序列编码；旧版逐张 `images` 数据保持原样，查询与导出时自动合并两种来源
+- 删除按整片进行（片内帧互相依赖）：时间范围与分片重叠即整片删除，片内所有帧一并计数
+- 无 ffmpeg（或编码 / 入库失败）时自动回退为逐张 JPEG 写入 `images`，不丢数据
+- 依赖外部 `ffmpeg`（需含 `libsvtav1`），可用环境变量 `CAMERATINYMES_FFMPEG` 指定可执行文件路径
+- 崩溃 / 断电最多丢失最后一个未封片（≤30 帧或 ≤5 秒）；断开相机与关闭程序都会强制封片
 
 ## 数据库连接（MariaDB 优先，SQLite 兜底）
 
