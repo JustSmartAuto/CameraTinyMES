@@ -55,6 +55,7 @@ class CameraWorker:
         self.writer = writer      # AV1 帧序列写入器；None 时逐张 JPEG 入库
         self.events = events  # UI 侧队列，消息为 (camera, kind, payload)
         self.client = CogSocketClient(cfg.host, cfg.port, cfg.username, cfg.password)
+        self.job: str | None = None  # 相机当前作业名（jobx 配方），随采样一起落库
         self._task: asyncio.Task | None = None
         self._poll_tasks: list[asyncio.Task] = []
         self._image_tasks: list[asyncio.Task] = []
@@ -112,6 +113,7 @@ class CameraWorker:
             return
         sid = await self.client.open_session(cell_names)
         self._push("session", sid)
+        await self._refresh_job()
 
         # 图像随结果事件一起到达：图像单元格一律按事件采样（poll 会重复下载同一张图）
         event_cells = [c for c in self.cfg.cells if c.sample_mode == "event" or c.is_image]
@@ -148,8 +150,35 @@ class CameraWorker:
         for cell in poll_cells:
             self._poll_tasks.append(asyncio.create_task(self._poll_loop(sid, cell)))
 
-        # 保持任务存活，由外层重连循环管理生命周期
-        await asyncio.Future()
+        # 操作员随时可能换配方，定期刷新作业名；保持任务存活，由外层重连循环管理生命周期
+        job_task = asyncio.create_task(self._job_loop())
+        try:
+            await asyncio.Future()
+        finally:
+            job_task.cancel()
+
+    async def _job_loop(self, interval: float = 10.0) -> None:
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                await self._refresh_job()
+        except asyncio.CancelledError:
+            pass
+
+    async def _refresh_job(self) -> None:
+        """读取当前作业名；换作业时封掉旧配方的 AV1 分片，避免一个分片混两种配方。"""
+        try:
+            name = await self.client.job_name()
+        except Exception as exc:
+            log.debug("读取作业名失败 %s: %s", self.cfg.name, exc)
+            return
+        if not name or name == self.job:
+            return
+        previous, self.job = self.job, name
+        log.info("相机 %s 当前作业：%s", self.cfg.name, name)
+        self._push("job", name)
+        if previous is not None and self.writer is not None:
+            await asyncio.to_thread(self.writer.flush_camera, self.cfg.name)
 
     async def _safe_ready(self) -> None:
         try:
@@ -187,7 +216,8 @@ class CameraWorker:
             if not cell.is_simple_record and cell.is_numeric:
                 lower, upper = cell.lower, cell.upper
             self.storage.insert_sample(ts, self.cfg.name, cell.name, value, ok,
-                                       lower_limit=lower, upper_limit=upper)
+                                       lower_limit=lower, upper_limit=upper,
+                                       job=self.job)
         except Exception as exc:
             log.warning("store cell %s failed: %s", cell.name, exc)
 
@@ -237,9 +267,10 @@ class CameraWorker:
         try:
             raw_jpeg, width, height = await asyncio.to_thread(to_jpeg, data)
             if self.writer is None or not self.writer.add_frame(
-                    ts, self.cfg.name, cell.name, "image", raw_jpeg, width, height):
+                    ts, self.cfg.name, cell.name, "image", raw_jpeg, width, height,
+                    job=self.job):
                 self.storage.insert_image(ts, self.cfg.name, cell.name, "image",
-                                          raw_jpeg, "image/jpeg")
+                                          raw_jpeg, "image/jpeg", job=self.job)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -252,9 +283,10 @@ class CameraWorker:
                 render_jpeg, width, height = await asyncio.to_thread(
                     compose_render, data, graphics, src_w)
                 if self.writer is None or not self.writer.add_frame(
-                        ts, self.cfg.name, cell.name, "render", render_jpeg, width, height):
+                        ts, self.cfg.name, cell.name, "render", render_jpeg, width, height,
+                        job=self.job):
                     self.storage.insert_image(ts, self.cfg.name, cell.name, "render",
-                                              render_jpeg, "image/jpeg")
+                                              render_jpeg, "image/jpeg", job=self.job)
                 render_ok = True
             except asyncio.CancelledError:
                 raise
@@ -265,7 +297,7 @@ class CameraWorker:
         try:
             # 同时记一条样本，让图像单元格出现在合表中
             self.storage.insert_sample(ts, self.cfg.name, cell.name,
-                                       f"[图像 {size}]", None)
+                                       f"[图像 {size}]", None, job=self.job)
         except Exception as exc:
             log.warning("store image sample %s failed: %s", cell.name, exc)
         self._push("image", {cell.name: f"图像+渲染图 {size}" if render_ok

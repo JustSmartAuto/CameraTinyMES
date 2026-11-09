@@ -172,9 +172,9 @@ class ImageStreamWriter:
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._active = 0            # 正在编码的分片数（关闭时等待归零）
-        self._buffers: dict[tuple[str, str, str], list[tuple]] = {}
-        self._ready: list[tuple[tuple[str, str, str], list[tuple]]] = []
-        self._last_add: dict[tuple[str, str, str], float] = {}
+        self._buffers: dict[tuple[str, str, str, str], list[tuple]] = {}
+        self._ready: list[tuple[tuple[str, str, str, str], list[tuple]]] = []
+        self._last_add: dict[tuple[str, str, str, str], float] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         if not self.enabled:
@@ -186,11 +186,15 @@ class ImageStreamWriter:
     # ---------- 对外接口 ----------
 
     def add_frame(self, ts: datetime, camera: str, cell: str, kind: str,
-                  data: bytes, width: int | None, height: int | None) -> bool:
-        """投递一帧；返回 False 表示编码不可用，调用方应回退 JPEG 入库。"""
+                  data: bytes, width: int | None, height: int | None,
+                  job: str | None = None) -> bool:
+        """投递一帧；返回 False 表示编码不可用，调用方应回退 JPEG 入库。
+
+        作业名（jobx 配方）进缓冲键：换配方后帧自然落到新分片，一个分片不混两种配方。
+        """
         if not self.enabled:
             return False
-        key = (camera, cell, kind)
+        key = (camera, cell, kind, job or "")
         with self._lock:
             buf = self._buffers.setdefault(key, [])
             if buf and (buf[0][2], buf[0][3]) != (width, height):
@@ -247,7 +251,7 @@ class ImageStreamWriter:
         for key, frames in ready:
             self._encode(key, frames)
 
-    def _encode(self, key: tuple[str, str, str], frames: list[tuple]) -> None:
+    def _encode(self, key: tuple[str, str, str, str], frames: list[tuple]) -> None:
         if not frames:
             return
         with self._cond:
@@ -259,7 +263,7 @@ class ImageStreamWriter:
                 self._active -= 1
                 self._cond.notify_all()
 
-    def _encode_inner(self, key: tuple[str, str, str], frames: list[tuple]) -> None:
+    def _encode_inner(self, key: tuple[str, str, str, str], frames: list[tuple]) -> None:
         data = encode_frames([f[1] for f in frames])
         if data is None:
             self._fallback(key, frames)
@@ -267,14 +271,16 @@ class ImageStreamWriter:
         try:
             self.storage.insert_image_stream(
                 key[0], key[1], key[2],
-                [(f[0], f[2], f[3]) for f in frames], data)
+                [(f[0], f[2], f[3]) for f in frames], data,
+                job=key[3] or None)
         except Exception:
             log.exception("AV1 分片入库失败，回退 JPEG 单帧")
             self._fallback(key, frames)
 
-    def _fallback(self, key: tuple[str, str, str], frames: list[tuple]) -> None:
+    def _fallback(self, key: tuple[str, str, str, str], frames: list[tuple]) -> None:
         for ts, data, _w, _h in frames:
             try:
-                self.storage.insert_image(ts, key[0], key[1], key[2], data, "image/jpeg")
+                self.storage.insert_image(ts, key[0], key[1], key[2], data, "image/jpeg",
+                                          job=key[3] or None)
             except Exception:
                 log.exception("JPEG 回退入库失败")

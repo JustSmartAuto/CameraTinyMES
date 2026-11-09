@@ -203,14 +203,15 @@
     <h2>数据模型（SQLite / MariaDB 同构）</h2>
     <table>
       <tr><th>表</th><th>说明</th><th>关键字段</th></tr>
-      <tr><td><code>samples</code></td><td>采样值</td><td><code>ts</code>、<code>camera</code>、<code>cell</code>、<code>value</code>、<code>text</code>、<code>ok</code>、<code>lower_limit</code> / <code>upper_limit</code> / <code>spec_version</code>（判定快照）</td></tr>
-      <tr><td><code>images</code></td><td>单帧图像 BLOB（旧数据与编码回退）</td><td><code>ts</code>、<code>camera</code>、<code>cell</code>、<code>kind</code>（<code>image</code> / <code>render</code>）、<code>mime</code>、<code>width</code>、<code>height</code>、<code>data</code></td></tr>
-      <tr><td><code>image_streams</code></td><td>AV1 帧序列分片（IVF 码流）</td><td><code>ts_start</code> / <code>ts_end</code>、<code>camera</code>、<code>cell</code>、<code>kind</code>、<code>codec</code>、<code>container</code>、<code>frame_count</code>、<code>size_bytes</code>、<code>data</code></td></tr>
+      <tr><td><code>samples</code></td><td>采样值</td><td><code>ts</code>、<code>camera</code>、<code>cell</code>、<code>job</code>（jobx 配方名）、<code>value</code>、<code>text</code>、<code>ok</code>、<code>lower_limit</code> / <code>upper_limit</code> / <code>spec_version</code>（判定快照）</td></tr>
+      <tr><td><code>images</code></td><td>单帧图像 BLOB（旧数据与编码回退）</td><td><code>ts</code>、<code>camera</code>、<code>cell</code>、<code>job</code>（jobx 配方名）、<code>kind</code>（<code>image</code> / <code>render</code>）、<code>mime</code>、<code>width</code>、<code>height</code>、<code>data</code></td></tr>
+      <tr><td><code>image_streams</code></td><td>AV1 帧序列分片（IVF 码流）</td><td><code>ts_start</code> / <code>ts_end</code>、<code>camera</code>、<code>cell</code>、<code>job</code>（jobx 配方名）、<code>kind</code>、<code>codec</code>、<code>container</code>、<code>frame_count</code>、<code>size_bytes</code>、<code>data</code></td></tr>
       <tr><td><code>image_frames</code></td><td>分片帧索引</td><td><code>stream_id</code>、<code>frame_index</code>、<code>ts</code>、<code>camera</code>、<code>cell</code>、<code>kind</code></td></tr>
       <tr><td><code>events</code></td><td>轻量异常事件（断线 / NG 突发）</td><td><code>camera</code>、<code>cell</code>、<code>code</code>、首次 / 末次发生、恢复时间、状态</td></tr>
       <tr><td><code>annotations</code></td><td>误判人工复核标注</td><td><code>image_id</code>、<code>label</code>、<code>description</code>、<code>json</code>（XAnyLabeling 3.3.x）</td></tr>
     </table>
     <p>相机与单元格配置存于 <code>config/cameras.json</code>，不入库。</p>
+    <p><code>job</code> 为拍照时相机运行的作业名（<code>GET cam0/hmi/job/name</code>，如 <code>myjob.jobx</code>），连上相机即读取、之后每 10 秒刷新；换配方时自动封掉旧的 AV1 分片，一个分片只属于一种配方。按 <code>job</code> 分组即可统计各配方的 NG 率 / 误判率。</p>
     <blockquote>具体表结构以 <code>src/cameratinymes/storage.py</code> 实际代码为准。</blockquote>
 
     <h2 id="readme-db">数据库连接（MariaDB 优先，SQLite 兜底）</h2>
@@ -253,6 +254,7 @@
       <tr><th>参数 / 行为</th><th>值</th></tr>
       <tr><td>分片上限</td><td>30 帧（同时是 GOP 长度，片内首帧为关键帧）</td></tr>
       <tr><td>空闲封片</td><td>5 秒无新帧即封片</td></tr>
+      <tr><td>换配方封片</td><td>相机作业（jobx）变化时立即封片，分片带 <code>job</code> 便于按配方统计</td></tr>
       <tr><td>编码器</td><td>SVT-AV1 <code>preset 10</code> + <code>CRF 32</code>，<code>yuv420p</code></td></tr>
       <tr><td>实测（OP20-58 真实 30 帧）</td><td>1.39 MB JPEG → <strong>213 KB</strong> AV1（<strong>6.5×</strong>），编码 0.53 s，解码 0.17 s</td></tr>
     </table>

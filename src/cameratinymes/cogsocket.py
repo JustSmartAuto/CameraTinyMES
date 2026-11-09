@@ -93,6 +93,15 @@ class CogSocketClient:
         await self._request("unlisten", path)
         self._listeners.pop(path, None)
 
+    async def job_name(self) -> str | None:
+        """读取相机当前作业名（如 myjob.jobx，即拍照时运行的配方）；不支持时返回 None。"""
+        try:
+            body = await self.get(f"{self.root}/job/name")
+        except CogSocketError as exc:
+            log.debug("%s:%s 读取作业名失败: %s", self.host, self.port, exc)
+            return None
+        return str(body) if body else None
+
     async def open_session(self, cell_names: list[str]) -> str:
         info = {"$type": "HmiSessionInfo", "cellNames": cell_names}
         sid = await self.post(f"{self.root}/openSession", info)

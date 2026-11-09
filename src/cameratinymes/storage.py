@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS samples (
     ts TEXT NOT NULL,               -- ISO8601 本地时间
     camera TEXT NOT NULL,           -- 相机名
     cell TEXT NOT NULL,             -- 单元格名/地址
+    job TEXT,                       -- 拍照时相机运行的作业（jobx 配方名）
     value REAL,                     -- 数值（无法解析为数值时为 NULL）
     text TEXT,                      -- 原始文本
     ok INTEGER,                     -- 1=合格 0=超差 NULL=无阈值
@@ -35,12 +36,14 @@ CREATE TABLE IF NOT EXISTS samples (
     spec_version INTEGER            -- 规格版本快照（预留，暂未启用）
 );
 CREATE INDEX IF NOT EXISTS idx_samples_cam_cell ON samples(camera, cell, ts);
+-- idx_samples_cam_job 在 _migrate_schema 中建：旧库需先补 job 列，否则索引语句会失败
 
 CREATE TABLE IF NOT EXISTS images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,               -- ISO8601 本地时间（同一次拍照共用）
     camera TEXT NOT NULL,
     cell TEXT NOT NULL,
+    job TEXT,                       -- 拍照时相机运行的作业（jobx 配方名）
     kind TEXT NOT NULL,             -- image=原始图 render=结果渲染图
     mime TEXT,                      -- 如 image/png
     width INTEGER,
@@ -83,6 +86,7 @@ CREATE TABLE IF NOT EXISTS image_streams (
     ts_end TEXT NOT NULL,           -- 末帧时间
     camera TEXT NOT NULL,
     cell TEXT NOT NULL,
+    job TEXT,                       -- 分片所属作业（jobx 配方名）
     kind TEXT NOT NULL,             -- image=原始图 render=结果渲染图
     codec TEXT NOT NULL,            -- av1
     container TEXT NOT NULL,        -- ivf
@@ -117,6 +121,7 @@ CREATE TABLE IF NOT EXISTS samples (
     ts VARCHAR(32) NOT NULL,
     camera VARCHAR(64) NOT NULL,
     cell VARCHAR(64) NOT NULL,
+    job VARCHAR(128) NULL,
     value DOUBLE NULL,
     text LONGTEXT NULL,
     ok TINYINT NULL,
@@ -124,7 +129,8 @@ CREATE TABLE IF NOT EXISTS samples (
     upper_limit DOUBLE NULL,
     spec_version INT NULL,
     PRIMARY KEY (id),
-    KEY idx_samples_cam_cell (camera, cell, ts)
+    KEY idx_samples_cam_cell (camera, cell, ts),
+    KEY idx_samples_cam_job (camera, job, ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS images (
@@ -132,6 +138,7 @@ CREATE TABLE IF NOT EXISTS images (
     ts VARCHAR(32) NOT NULL,
     camera VARCHAR(64) NOT NULL,
     cell VARCHAR(64) NOT NULL,
+    job VARCHAR(128) NULL,
     kind VARCHAR(16) NOT NULL,
     mime VARCHAR(64) NULL,
     width INT NULL,
@@ -178,6 +185,7 @@ CREATE TABLE IF NOT EXISTS image_streams (
     ts_end VARCHAR(32) NOT NULL,
     camera VARCHAR(64) NOT NULL,
     cell VARCHAR(64) NOT NULL,
+    job VARCHAR(128) NULL,
     kind VARCHAR(16) NOT NULL,
     codec VARCHAR(16) NOT NULL,
     container VARCHAR(16) NOT NULL,
@@ -328,6 +336,7 @@ class StorageBase:
         lower_limit: float | None = None,
         upper_limit: float | None = None,
         spec_version: int | None = None,
+        job: str | None = None,
     ) -> None:
         value = None
         try:
@@ -336,9 +345,9 @@ class StorageBase:
             pass
         self._execute(
             "INSERT INTO samples"
-            " (ts, camera, cell, value, text, ok, lower_limit, upper_limit, spec_version)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
-            (ts.isoformat(timespec="milliseconds"), camera, cell, value, str(raw), ok,
+            " (ts, camera, cell, job, value, text, ok, lower_limit, upper_limit, spec_version)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (ts.isoformat(timespec="milliseconds"), camera, cell, job, value, str(raw), ok,
              lower_limit, upper_limit, spec_version),
         )
 
@@ -415,6 +424,7 @@ class StorageBase:
         kind: str,
         data: bytes,
         mime: str = "image/png",
+        job: str | None = None,
     ) -> tuple[int | None, int | None]:
         """写入图像 BLOB，返回 (宽, 高)（无法解析时为 None）。"""
         width = height = None
@@ -428,9 +438,9 @@ class StorageBase:
         except Exception:
             pass
         self._execute(
-            "INSERT INTO images (ts, camera, cell, kind, mime, width, height, data)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (ts.isoformat(timespec="milliseconds"), camera, cell, kind,
+            "INSERT INTO images (ts, camera, cell, job, kind, mime, width, height, data)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts.isoformat(timespec="milliseconds"), camera, cell, job, kind,
              mime, width, height, data),
         )
         return width, height
@@ -507,6 +517,7 @@ class StorageBase:
         data: bytes,
         codec: str = "av1",
         container: str = "ivf",
+        job: str | None = None,
     ) -> int:
         """写入一个 AV1 分片，frames=[(ts, width, height)] 按帧序，返回分片 id。"""
         ts_start = frames[0][0].isoformat(timespec="milliseconds")
@@ -514,10 +525,10 @@ class StorageBase:
         width, height = frames[0][1], frames[0][2]
         stream_id, _ = self._execute(
             "INSERT INTO image_streams"
-            " (ts_start, ts_end, camera, cell, kind, codec, container,"
+            " (ts_start, ts_end, camera, cell, job, kind, codec, container,"
             "  frame_count, width, height, size_bytes, data)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (ts_start, ts_end, camera, cell, kind, codec, container,
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (ts_start, ts_end, camera, cell, job, kind, codec, container,
              len(frames), width, height, len(data), data),
         )
         self._execute_many(
@@ -700,9 +711,16 @@ class SQLiteStorage(StorageBase):
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(samples)")}
         for name, ddl_type in (("lower_limit", "REAL"),
                                ("upper_limit", "REAL"),
-                               ("spec_version", "INTEGER")):
+                               ("spec_version", "INTEGER"),
+                               ("job", "TEXT")):
             if name not in existing:
                 self._conn.execute(f"ALTER TABLE samples ADD COLUMN {name} {ddl_type}")
+        for table in ("images", "image_streams"):
+            columns = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if "job" not in columns:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN job TEXT")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_samples_cam_job ON samples(camera, job, ts)")
 
     def database_size_mb(self) -> float | None:
         try:
@@ -758,9 +776,17 @@ class MariaDBStorage(StorageBase):
         existing = {row[0] for row in self._fetchall("SHOW COLUMNS FROM samples")}
         for name, ddl_type in (("lower_limit", "DOUBLE"),
                                ("upper_limit", "DOUBLE"),
-                               ("spec_version", "INT")):
+                               ("spec_version", "INT"),
+                               ("job", "VARCHAR(128)")):
             if name not in existing:
                 self._execute(f"ALTER TABLE samples ADD COLUMN {name} {ddl_type}")
+        for table in ("images", "image_streams"):
+            columns = {row[0] for row in self._fetchall(f"SHOW COLUMNS FROM {table}")}
+            if "job" not in columns:
+                self._execute(f"ALTER TABLE {table} ADD COLUMN job VARCHAR(128) NULL")
+        keys = {row[2] for row in self._fetchall("SHOW INDEX FROM samples")}
+        if "idx_samples_cam_job" not in keys:
+            self._execute("ALTER TABLE samples ADD KEY idx_samples_cam_job (camera, job, ts)")
 
     def database_size_mb(self) -> float | None:
         try:

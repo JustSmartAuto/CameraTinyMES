@@ -425,6 +425,8 @@ class MonitorApp:
                 elif kind == "image" and panel:
                     for cell, text in (payload or {}).items():
                         panel.set_value(cell, text)
+                elif kind == "job":
+                    self._log(f"[{camera}] 当前作业 {payload or '-'}")
         except Exception:
             pass
         self.root.after(100, self._poll_events)

@@ -69,18 +69,20 @@
 
 | 表 | 说明 | 关键字段 |
 |---|---|---|
-| `samples` | 采样记录（含判定依据快照） | `ts` 时间戳、`camera` 相机、`cell` 单元格、`value` 数值、`text` 原始文本、`ok` 判定（1=OK / 0=NG / NULL=无阈值）、`lower_limit` / `upper_limit` 判定时上下限快照、`spec_version` 规格版本（预留） |
-| `images` | 单帧图像 BLOB（旧数据与编码回退） | `ts`、`camera`、`cell`、`kind`（`image`=原图 / `render`=结果渲染图）、`mime`、`width`、`height`、`data` |
-| `image_streams` | AV1 帧序列分片（IVF 码流） | `ts_start` / `ts_end` 分片首末帧时间、`camera`、`cell`、`kind`、`codec`、`container`、`frame_count`、`width`、`height`、`size_bytes`、`data` |
+| `samples` | 采样记录（含判定依据快照） | `ts` 时间戳、`camera` 相机、`cell` 单元格、`job` 拍照时相机作业（jobx 配方名）、`value` 数值、`text` 原始文本、`ok` 判定（1=OK / 0=NG / NULL=无阈值）、`lower_limit` / `upper_limit` 判定时上下限快照、`spec_version` 规格版本（预留） |
+| `images` | 单帧图像 BLOB（旧数据与编码回退） | `ts`、`camera`、`cell`、`job`（jobx 配方名）、`kind`（`image`=原图 / `render`=结果渲染图）、`mime`、`width`、`height`、`data` |
+| `image_streams` | AV1 帧序列分片（IVF 码流） | `ts_start` / `ts_end` 分片首末帧时间、`camera`、`cell`、`job`（jobx 配方名）、`kind`、`codec`、`container`、`frame_count`、`width`、`height`、`size_bytes`、`data` |
 | `image_frames` | 分片帧索引 | `stream_id`（关联 `image_streams.id`，级联删除）、`frame_index` 片内序号、`ts`、`camera`、`cell`、`kind`、`width`、`height` |
 | `events` | 异常事件（轻量） | `ts` 首次发生、`last_ts` 最近发生、`recovered_ts` 恢复时间、`camera`、`cell`、`code` 事件码、`message`、`status`（`open` / `recovered` / `acked`） |
 | `annotations` | 误判人工复核标注 | `image_id`（关联 `images.id`，随图像级联删除）、`camera`、`cell`、`ts`、`reviewer` 复核人、`label` 误判类别、`description` 误判原因/注意点、`json` 完整 XAnyLabeling 3.3.x JSON（`imageData` 内嵌图片） |
 
-索引：`idx_samples_cam_cell(camera, cell, ts)`、`idx_images_cam_cell(camera, cell, ts)`、`idx_streams_cam_cell_ts(camera, cell, kind, ts_start)`、`idx_frames_cam_cell_ts(camera, cell, kind, ts)`、`idx_frames_stream(stream_id, frame_index)`、`idx_events_camera_code_ts(camera, code, ts)`、`idx_annotations_image(image_id)`、`idx_annotations_cam_cell_ts(camera, cell, ts)`。
+索引：`idx_samples_cam_cell(camera, cell, ts)`、`idx_samples_cam_job(camera, job, ts)`、`idx_images_cam_cell(camera, cell, ts)`、`idx_streams_cam_cell_ts(camera, cell, kind, ts_start)`、`idx_frames_cam_cell_ts(camera, cell, kind, ts)`、`idx_frames_stream(stream_id, frame_index)`、`idx_events_camera_code_ts(camera, code, ts)`、`idx_annotations_image(image_id)`、`idx_annotations_cam_cell_ts(camera, cell, ts)`。
+
+`job` 为拍照时相机正在运行的作业名（`GET cam0/hmi/job/name`，如 `myjob.jobx`），即该次检测使用的配方：连上相机立即读取，之后每 10 秒刷新；换配方时自动封掉旧的 AV1 分片，保证一个分片只属于一种配方。按 `job` 分组即可统计各配方的 NG 率 / 误判率（标注经 `annotations.image_id` 关联到带 `job` 的 `images`）。
 
 `lower_limit` / `upper_limit` 在写入采样时记录当时的判定阈值（仅 `advanced` + 数值类型），后续修改单元格配置不影响历史判定依据；`events` 对应对标系统 `ExceptionEvents` 的简化版，表结构已就绪，采集端断线 / NG 突发写入待接入；`spec_version` 对应 `ParameterSpecs.Version`，暂为预留列。
 
-旧库升级：`Storage` 初始化时通过 `PRAGMA table_info` 检测缺失列并自动 `ALTER TABLE` 补齐，已有采样数据不受影响。
+旧库升级：初始化时检测缺失列并自动 `ALTER TABLE` 补齐（SQLite 用 `PRAGMA table_info`，MariaDB 用 `SHOW COLUMNS`），已有采样数据不受影响。
 
 > 具体表结构以 `src/cameratinymes/storage.py` 实际代码为准。
 
@@ -88,7 +90,7 @@
 
 产线上同工位的 A0 图像连续且变化很小，逐张 JPEG 存储占用大。软件把同一「相机 + 单元格 + 类型」的连续帧按 GOP 打成 AV1（IVF）分片后入库：
 
-- 每片最多 **30 帧**，或空闲 **5 秒**即封片；片内首帧为关键帧，取单帧最多解码 30 帧
+- 每片最多 **30 帧**，或空闲 **5 秒**、或相机换配方（`job` 变化）即封片；片内首帧为关键帧，取单帧最多解码 30 帧
 - 编码参数：SVT-AV1 `preset 10` + `CRF 32`；实测 OP20-58 真实序列压缩率约 **6.5×**（1.39 MB → 213 KB / 30 帧），编码约 0.53 s、解码约 0.17 s
 - 原始图与 A0 渲染图都按序列编码；旧版逐张 `images` 数据保持原样，查询与导出时自动合并两种来源
 - 删除按整片进行（片内帧互相依赖）：时间范围与分片重叠即整片删除，片内所有帧一并计数
