@@ -115,21 +115,61 @@ class CameraWorker:
         self._push("session", sid)
         await self._refresh_job()
 
+        # auto 单元格运行时自动识别：收到 HmiResult 时看 resolve_sources 能否拿到图像 URL。
+        # 能 → 视作图像单元格，走事件驱动下载；不能 → 按原来的数值/字符串处理。
+        # 这里先主动 queryCellResults 探一次 HmiResult（event 类型会返回完整 HmiResult），
+        # 探测出 auto 图像单元格后，把它们并入 event_cells / 从 poll_cells 移除。
+        auto_cells = [c for c in self.cfg.cells if c.data_type == "auto"
+                      and not c.is_image]
+        auto_image_names: set[str] = set()
+        if auto_cells:
+            try:
+                # GET {sid}/result 返回完整 HmiResult（含 acqImageView）
+                first = await self.client.get(f"{sid}/result")
+                for c in auto_cells:
+                    if resolve_sources(first or {}, c.name):
+                        auto_image_names.add(c.name)
+                if auto_image_names:
+                    log.info(
+                        "auto 单元格探测为图像源: %s （A0 等采集视图单元格）",
+                        ", ".join(auto_image_names),
+                    )
+            except Exception as exc:
+                log.debug("auto 单元格预探测 GET %s/result 失败: %s", sid, exc)
+
         # 图像随结果事件一起到达：图像单元格一律按事件采样（poll 会重复下载同一张图）
-        event_cells = [c for c in self.cfg.cells if c.sample_mode == "event" or c.is_image]
+        event_cells = [c for c in self.cfg.cells
+                       if c.sample_mode == "event"
+                       or c.is_image
+                       or c.name in auto_image_names]
         poll_cells = [c for c in self.cfg.cells
-                      if c.sample_mode == "poll" and not c.is_image]
+                      if c.sample_mode == "poll"
+                      and not c.is_image
+                      and c.name not in auto_image_names]
 
         if event_cells:
             done = asyncio.Event()
-            image_names = {c.name for c in event_cells if c.is_image}
+            image_names = ({c.name for c in event_cells if c.is_image}
+                           | auto_image_names)
+            # 缓存探测结果，首次 on_result 前可能已在预探测阶段得到
+            detected = set(auto_image_names)
 
             def on_result(hmi_result):
+                nonlocal detected
                 try:
                     values = parse_cells(hmi_result or {})
                     ts = datetime.now()
+
+                    # 兜底：如果预探测漏了，首次事件时再补一次
+                    if not detected and auto_cells:
+                        detected = {c.name for c in auto_cells
+                                    if resolve_sources(hmi_result or {}, c.name)}
+                        if detected:
+                            log.info("auto 单元格事件触发探测为图像源: %s",
+                                     ", ".join(detected))
+
                     for cell in event_cells:
-                        if cell.is_image:
+                        if cell.is_image or cell.name in detected:
                             self._store_image(ts, cell, hmi_result)
                             continue
                         if cell.name in values:
@@ -138,7 +178,8 @@ class CameraWorker:
                             except Exception as exc:
                                 log.warning("store event cell %s failed: %s", cell.name, exc)
                     self._push("result", {k: v for k, v in values.items()
-                                          if k not in image_names})
+                                          if k not in image_names
+                                          and k not in detected})
                 finally:
                     # 必须 ready，相机才会推送下一帧
                     asyncio.ensure_future(self._safe_ready())
