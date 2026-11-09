@@ -109,7 +109,9 @@ def encode_frames(jpegs: list[bytes]) -> bytes | None:
             "-g", str(max(1, len(jpegs))), "-keyint_min", "1",
             "-pix_fmt", "yuv420p", "-an", "-f", "ivf", str(out),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              creationflags=creationflags)
         if proc.returncode != 0:
             log.warning("AV1 编码失败: %s", proc.stderr.strip()[:400])
             return None
@@ -131,7 +133,9 @@ def decode_stream(data: bytes) -> list[bytes]:
             "-f", "image2", "-c:v", "mjpeg", "-q:v", "2",
             str(root / "o_%06d.jpg"),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              creationflags=creationflags)
         if proc.returncode != 0:
             log.warning("AV1 解码失败: %s", proc.stderr.strip()[:400])
             return []
