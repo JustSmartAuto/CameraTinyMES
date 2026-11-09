@@ -217,6 +217,21 @@ class StorageBase:
             cur.close()
             return rows
 
+    def health_check(self) -> bool:
+        """轻量连通性检查：执行 SELECT 1，失败返回 False（不抛异常）。"""
+        try:
+            with self._lock:
+                cur = self._conn.execute("SELECT 1")
+                cur.fetchone()
+                cur.close()
+            return True
+        except Exception:
+            return False
+
+    def database_size_mb(self) -> float | None:
+        """当前后端的数据占用（MB），不可用时返回 None。"""
+        return None
+
     # ---------- 采样 ----------
 
     def insert_sample(
@@ -522,6 +537,12 @@ class SQLiteStorage(StorageBase):
             if name not in existing:
                 self._conn.execute(f"ALTER TABLE samples ADD COLUMN {name} {ddl_type}")
 
+    def database_size_mb(self) -> float | None:
+        try:
+            return round(self.path.stat().st_size / 1024 / 1024, 2)
+        except OSError:
+            return None
+
 
 # 兼容旧调用方式：Storage(path) 等价于 SQLiteStorage(path)
 Storage = SQLiteStorage
@@ -573,6 +594,16 @@ class MariaDBStorage(StorageBase):
                                ("spec_version", "INT")):
             if name not in existing:
                 self._execute(f"ALTER TABLE samples ADD COLUMN {name} {ddl_type}")
+
+    def database_size_mb(self) -> float | None:
+        try:
+            rows = self._fetchall(
+                "SELECT COALESCE(SUM(data_length + index_length), 0)"
+                " FROM information_schema.tables WHERE table_schema = ?",
+                (self.database,))
+            return round(float(rows[0][0] or 0) / 1024 / 1024, 2)
+        except Exception:
+            return None
 
 
 def open_storage(data_dir: Path, config: DatabaseConfig | None = None) -> StorageBase:

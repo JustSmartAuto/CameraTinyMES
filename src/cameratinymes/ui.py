@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 import threading
 import unicodedata
 from datetime import datetime
@@ -178,6 +179,9 @@ class MonitorApp:
         self.storage = open_storage(data_dir)
         self.monitor = Monitor(self.storage)
         self.panels: dict[str, CameraPanel] = {}
+        self._db_status_q: queue.Queue[tuple[bool, float | None]] = queue.Queue()
+        self._db_stop = threading.Event()
+        self._db_ok: bool | None = None
 
         self.root = tk.Tk()
         self.root.title("CameraTinyMES — Cognex In-Sight 迷你制造执行系统")
@@ -187,6 +191,7 @@ class MonitorApp:
         self._build_ui()
         endpoint = getattr(self.storage, "endpoint", getattr(self.storage, "path", ""))
         self._log(f"存储后端: {self.storage.backend}  {endpoint}")
+        self._start_db_monitor()
         self._start_asyncio_thread()
 
     # ---------- UI 构建 ----------
@@ -202,6 +207,9 @@ class MonitorApp:
         theme.beos_button(bar, "添加相机", self.add_camera).pack(side="left", padx=3)
         theme.beos_button(bar, "配置单元格", self.edit_camera).pack(side="left", padx=3)
         theme.beos_button(bar, "打开数据目录", self.open_data_dir).pack(side="left", padx=3)
+        self.db_status = tk.Label(bar, text="数据库 连接中…", bg=C["chrome"],
+                                  fg=C["chrome_dark"], font=theme.FONT_BOLD)
+        self.db_status.pack(side="right", padx=8)
         tk.Label(bar, text=f"数据目录: {self.data_dir}", bg=C["chrome"],
                  fg=C["chrome_darker"], font=theme.FONT).pack(side="right", padx=6)
 
@@ -367,6 +375,12 @@ class MonitorApp:
     def _poll_events(self) -> None:
         try:
             while True:
+                ok, size = self._db_status_q.get_nowait()
+                self._apply_db_status(ok, size)
+        except Exception:
+            pass
+        try:
+            while True:
                 camera, kind, payload = self.monitor.events.get_nowait()
                 panel = self.panels.get(camera)
                 if kind in ("connected", "disconnected", "error"):
@@ -383,6 +397,28 @@ class MonitorApp:
         except Exception:
             pass
         self.root.after(100, self._poll_events)
+
+    def _start_db_monitor(self) -> None:
+        """后台线程每 5 秒检查一次连接与数据尺寸，结果交给 UI 线程更新状态。"""
+        def loop() -> None:
+            while not self._db_stop.is_set():
+                ok = self.storage.health_check()
+                self._db_status_q.put((ok, self.storage.database_size_mb() if ok else None))
+                self._db_stop.wait(5)
+
+        threading.Thread(target=loop, name="db-health", daemon=True).start()
+
+    def _apply_db_status(self, ok: bool, size_mb: float | None) -> None:
+        name = {"sqlite": "SQLite", "mariadb": "MariaDB"}.get(self.storage.backend,
+                                                            self.storage.backend)
+        size_text = f"{size_mb:.2f} MB" if size_mb is not None else "-- MB"
+        if ok:
+            self.db_status.config(text=f"数据库 {name} 已连接 · {size_text}", fg=C["teal"])
+        else:
+            self.db_status.config(text=f"数据库 {name} 未连接 · {size_text}", fg=C["red_dot"])
+        if self._db_ok is not None and self._db_ok != ok:
+            self._log("数据库连接已恢复" if ok else "数据库连接断开")
+        self._db_ok = ok
 
     def _log(self, msg: str) -> None:
         self.log_text.config(state="normal")
@@ -564,6 +600,7 @@ class MonitorApp:
         self.root.after(300, self._finish_close)
 
     def _finish_close(self) -> None:
+        self._db_stop.set()
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.storage.close()
         save_config(self.data_dir, self.cameras)
