@@ -130,6 +130,37 @@
 
 MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖）；所有时间戳统一存 ISO8601 字符串（毫秒），保证两种后端排序与范围查询行为一致。
 
+## SQLite → MariaDB 数据迁移（实录）
+
+2026-11-09 将现场 SQLite 库 `cell_monitor.db` 全量迁入 `192.168.10.64:8306/camera_tiny_mes`，可作为后续换机 / 汇聚的模板。
+
+| 项 | 结果 |
+|---|---|
+| 源库 | SQLite，约 1 GB（`samples` 512,717 行；`images` 14,099 张 / 968,772,755 字节） |
+| 目标 | MariaDB 13.0.2，非默认端口 **8306**，账号 `justsmart` |
+| 建表 | 复用运行时 `MariaDBStorage` 的 DDL，保证迁移后表结构与程序一致 |
+| 耗时 | 644 秒（采样约 394s，图像约 250s） |
+| 校验 | 行数、id 区间、时间范围、`SUM(LENGTH(data))`、`text` 字节总量全部一致 |
+
+### 操作步骤
+
+1. **连通性**：先 `Test-NetConnection <host> -Port 8306`，再用 `pymysql` 登录，确认 `SELECT VERSION()`、`max_allowed_packet`、目标库是否已存在。
+2. **建库建表**：直接实例化 `MariaDBStorage(MariaDBConfig(host=..., port=8306, ...))`，自动 `CREATE DATABASE` + 四张表 + 补列，避免手写 DDL 与程序漂移。
+3. **空表检查**：迁移前 `SELECT COUNT(*) FROM samples/images`，非 0 立即中止，防止重复导入。
+4. **分批导入**：保留源库主键 `id`；`samples` 每批 2000 行，`images` 按「50 张或 8 MB 先到者」打包；每批 `executemany` 后 `commit()`。
+5. **校验**：对比两边的行数、`MIN/MAX(id)`、时间范围、图像字节总和，并抽查首尾行逐字段比对。
+
+### 关键经验
+
+- **端口不是 3306**：安装器固定 8306，远程连接前先确认端口与 `bind-address=0.0.0.0`。
+- **`max_allowed_packet` 是图像批量的上限**：默认 16 MB，单批控制在 8 MB 以内；单张超 16 MB 需先调大服务端参数。
+- **保留原 `id`**：显式插入主键后，MariaDB 会自动把 `AUTO_INCREMENT` 推到 `MAX(id)+1`，无需手工重置；同时便于核对与断点续传。
+- **每批提交而非单事务**：1 GB 数据单事务会撑大 undo log 且失败全丢；分批提交可中断重跑（配合空表检查或按 id 续传）。
+- **不要用 `SUM(LENGTH(text))` 直接对拷校验**：SQLite 的 `length()` 统计**字符数**，MariaDB 的 `LENGTH()` 统计**字节数**。正确做法是两边都取字节：SQLite 用 `LENGTH(CAST(text AS BLOB))`。本次该差异约 3.3 MB，属正常现象。
+- **旧库缺列**：本次源库没有 `lower_limit` / `upper_limit` / `spec_version`，迁移后置 `NULL`（无历史快照可补）；`ok` 全为 `NULL` 时保持原样，不要用默认值填充。
+- **迁移后启用**：应用不会自动切换目标库，需在 `<数据目录>/config/database.json` 把 `mariadb.host` 改为目标 IP；否则仍连本机或回退 SQLite。
+- 迁移脚本属于一次性工具，放在临时目录执行，不纳入仓库。
+
 ## 采样机制
 
 **智能相机**（Cognex In-Sight）的单元格取值时机由 `sample_mode` 决定：

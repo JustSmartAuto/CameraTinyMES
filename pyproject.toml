@@ -1,6 +1,6 @@
 [project]
 name = "camera-tiny-mes"
-version = "26.11.1.13"
+version = "26.11.9.15"
 description = "Cognex In-Sight 迷你MES系统（CogSocket 订阅 + SQLite/xlsx 落库 + 趋势图表）"
 requires-python = ">=3.13"
 dependencies = [
