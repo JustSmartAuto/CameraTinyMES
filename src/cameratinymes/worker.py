@@ -16,7 +16,6 @@ from .config import CameraConfig, CellConfig
 from .images import (cell_is_image, compose_render, fetch_image, fetch_json,
                      image_source_size, resolve_sources, scaled_url, to_jpeg)
 from .storage import StorageBase
-from .videocodec import ImageStreamWriter
 
 log = logging.getLogger(__name__)
 
@@ -348,8 +347,12 @@ class Monitor:
     """管理所有相机 Worker 与事件总线。"""
 
     def __init__(self, storage: StorageBase):
+        from .videocodec import BackgroundImageCompressor
         self.storage = storage
-        self.writer = ImageStreamWriter(storage)
+        # 实时分片已改为后台批量压缩（BackgroundImageCompressor），
+        # worker 直接写 images 表，compressor 攒够 30 帧再统一编码
+        self.writer = None
+        self.compressor = BackgroundImageCompressor(storage)
         self.events: queue.Queue = queue.Queue(maxsize=1000)
         self.workers: dict[str, CameraWorker] = {}
 
@@ -365,8 +368,6 @@ class Monitor:
         worker = self.workers.pop(name, None)
         if worker:
             await worker.stop()
-        # 相机断开时立即封片，避免尾部帧滞留内存
-        await asyncio.to_thread(self.writer.flush_camera, name)
         try:
             self.events.put_nowait((name, "disconnected", None))
         except queue.Full:
@@ -375,3 +376,11 @@ class Monitor:
     async def stop_all(self) -> None:
         for name in list(self.workers):
             await self.stop_camera(name)
+
+    def start_compressor(self) -> None:
+        """启动后台 AV1 压缩守护线程（在相机启动之后调用）。"""
+        self.compressor.start()
+
+    def stop_compressor(self) -> None:
+        """停止后台 AV1 压缩守护线程（在相机停止之后调用）。"""
+        self.compressor.stop()

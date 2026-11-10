@@ -206,6 +206,7 @@ class MonitorApp:
         self._db_status_q: queue.Queue[tuple[bool, float | None]] = queue.Queue()
         self._db_stop = threading.Event()
         self._db_ok: bool | None = None
+        self._compress_tick = 0  # 压缩状态刷新计时器（每 50 × 100ms = 5s）
 
         self.root = tk.Tk()
         self._apply_window_icon()
@@ -224,6 +225,9 @@ class MonitorApp:
         self._tray.start()
         if self.settings.minimize_to_tray_on_start and self._tray.available:
             self.root.after(200, self._hide_to_tray)
+
+        # 后台 AV1 压缩守护线程（扫描 images 表，批量打包成 30 帧 GOP 的 AV1 分片）
+        self.monitor.start_compressor()
 
     # ---------- UI 构建 ----------
 
@@ -252,6 +256,9 @@ class MonitorApp:
         self.db_status = tk.Label(bar, text="数据库 连接中…", bg=C["chrome"],
                                   fg=C["chrome_dark"], font=theme.FONT_BOLD)
         self.db_status.pack(side="right", padx=8)
+        self._compress_status = tk.Label(bar, text="AV1压缩 待命", bg=C["chrome"],
+                                         fg=C["chrome_darker"], font=theme.FONT)
+        self._compress_status.pack(side="right", padx=8)
         tk.Label(bar, text=f"数据目录: {self.data_dir}", bg=C["chrome"],
                  fg=C["chrome_darker"], font=theme.FONT).pack(side="right", padx=6)
 
@@ -446,7 +453,34 @@ class MonitorApp:
                     self._log(f"[{camera}] 当前作业 {payload or '-'}")
         except Exception:
             pass
+        # 每 5 秒刷新一次压缩状态
+        self._compress_tick += 1
+        if self._compress_tick >= 50:
+            self._compress_tick = 0
+            self._apply_compress_status()
         self.root.after(100, self._poll_events)
+
+    def _apply_compress_status(self) -> None:
+        """把 BackgroundImageCompressor 的 stats 更新到工具栏 Label。"""
+        compressor = self.monitor.compressor
+        if not compressor.enabled:
+            self._compress_status.config(text="AV1压缩 ffmpeg未就绪",
+                                          fg=C["red_dot"])
+            return
+        stats = compressor.stats
+        runs = stats["runs"]
+        frames = stats["frames"]
+        saved_mb = stats["saved_bytes"] / 1024 / 1024
+        new_mb = stats["new_bytes"] / 1024 / 1024
+        if runs == 0:
+            self._compress_status.config(text="AV1压缩 待命（待攒30帧）",
+                                          fg=C["chrome_darker"])
+        else:
+            ratio = (stats["orig_bytes"] / stats["new_bytes"]) if stats["new_bytes"] > 0 else 0
+            text = (f"AV1压缩 第{runs}轮·{frames}帧·"
+                    f"{stats['orig_bytes']/1024/1024:.1f}→{new_mb:.1f}MB·"
+                    f"{ratio:.1f}x·省{saved_mb:.1f}MB")
+            self._compress_status.config(text=text, fg=C["teal"])
 
     def _start_db_monitor(self) -> None:
         """后台线程每 5 秒检查一次连接与数据尺寸，结果交给 UI 线程更新状态。"""
@@ -678,7 +712,7 @@ class MonitorApp:
     def _finish_close(self) -> None:
         self._db_stop.set()
         self.loop.call_soon_threadsafe(self.loop.stop)
-        self.monitor.writer.close()   # 封存最后一批 AV1 分片
+        self.monitor.stop_compressor()  # 停止后台 AV1 压缩守护线程
         self.storage.close()
         save_config(self.data_dir, self.cameras)
         save_settings(self.data_dir, self.settings)

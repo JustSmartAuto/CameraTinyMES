@@ -324,6 +324,177 @@ class StorageBase:
         """当前后端的数据占用（MB），不可用时返回 None。"""
         return None
 
+    # ---------- 后台压缩专用 ----------
+
+    def _exec_batch(self, ops: list[tuple[str, tuple]]) -> None:
+        """在同一事务内执行多条写语句（后台压缩用）。"""
+        with self._lock:
+            cur = self._conn._raw.cursor() if hasattr(self._conn, "_raw") else self._conn.cursor()
+            try:
+                cur.execute(self._sql("BEGIN"))
+                for sql, args in ops:
+                    cur.execute(self._sql(sql), args)
+                self._conn.commit()
+            except Exception:
+                try:
+                    cur.execute(self._sql("ROLLBACK"))
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                cur.close()
+
+    def _exec_batch_with_insert_id(
+        self,
+        insert_sql: str, insert_args: tuple,
+        remaining_ops: list[tuple[str, tuple]],
+    ) -> int:
+        """在同一事务内先执行 INSERT 拿到自增 id，再执行后续多条语句。
+
+        用于后台压缩的三步原子操作：INSERT stream（拿 id）→ INSERT frames → DELETE images。
+        如果任何一步失败，全部回滚。返回 INSERT 产生的自增 id。
+        """
+        with self._lock:
+            cur = self._conn._raw.cursor() if hasattr(self._conn, "_raw") else self._conn.cursor()
+            try:
+                cur.execute(self._sql("BEGIN"))
+                cur.execute(self._sql(insert_sql), insert_args)
+                stream_id = cur.lastrowid
+                for sql, args in remaining_ops:
+                    cur.execute(self._sql(sql), args)
+                self._conn.commit()
+                return int(stream_id) if stream_id else 0
+            except Exception:
+                try:
+                    cur.execute(self._sql("ROLLBACK"))
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                cur.close()
+
+    def query_images_for_compress(
+        self,
+        camera: str,
+        cell: str,
+        kind: str,
+        job: str | None,
+        before_ts: str,
+        limit: int,
+    ) -> list[tuple[int, str, int | None, int | None]]:
+        """按 (camera, cell, kind, job) 查询稳定窗口内的 images，
+        排除有 annotations 引用的行，返回 [(id, ts, width, height)]。"""
+        sql = (
+            "SELECT i.id, i.ts, i.width, i.height"
+            " FROM images i"
+            " WHERE i.camera=? AND i.cell=? AND i.kind=?"
+            " AND i.ts<?"
+            " AND i.id NOT IN (SELECT image_id FROM annotations WHERE image_id IS NOT NULL)"
+        )
+        args: list = [camera, cell, kind, before_ts]
+        if job is None:
+            sql += " AND i.job IS NULL"
+        else:
+            sql += " AND i.job=?"
+            args.append(job)
+        sql += " ORDER BY i.ts LIMIT ?"
+        args.append(limit)
+        return self._fetchall(sql, tuple(args))
+
+    def delete_images_batch(self, ids: list[int]) -> int:
+        """批量删除 images 行（后台压缩成功后清理原图），返回影响行数。"""
+        if not ids:
+            return 0
+        marks = ",".join("?" * len(ids))
+        return self._execute(
+            f"DELETE FROM images WHERE id IN ({marks})", tuple(ids))[1]
+
+    def list_compressible_groups(
+        self,
+        before_ts: str,
+        min_frames: int = 5,
+    ) -> list[tuple[str, str, str, str | None, int]]:
+        """列出所有可压缩分组（同一时间窗口内 images 表帧数 ≥ min_frames 的）。
+
+        返回 [(camera, cell, kind, job, frame_count)]。
+        """
+        sql = (
+            "SELECT camera, cell, kind, job, COUNT(*)"
+            " FROM images"
+            " WHERE ts<?"
+            " AND id NOT IN (SELECT image_id FROM annotations WHERE image_id IS NOT NULL)"
+            " GROUP BY camera, cell, kind, job"
+            f" HAVING COUNT(*) >= {min_frames}"
+            " ORDER BY COUNT(*) DESC"
+        )
+        return self._fetchall(sql, (before_ts,))
+
+    def insert_stream_and_delete_images(
+        self,
+        camera: str,
+        cell: str,
+        kind: str,
+        job: str | None,
+        frames: list[tuple[datetime, int | None, int | None]],
+        stream_data: bytes,
+        image_ids: list[int],
+    ) -> int:
+        """同一事务内原子执行：INSERT image_streams + INSERT image_frames + DELETE images。
+
+        返回 stream_id；任何一步失败全部回滚。
+        """
+        ts_start = frames[0][0].isoformat(timespec="milliseconds")
+        ts_end = frames[-1][0].isoformat(timespec="milliseconds")
+        width, height = frames[0][1], frames[0][2]
+        frame_count = len(frames)
+        size_bytes = len(stream_data)
+
+        stream_id = 0
+        with self._lock:
+            cur = self._conn._raw.cursor() if hasattr(self._conn, "_raw") else self._conn.cursor()
+            try:
+                cur.execute(self._sql("BEGIN"))
+                # Step 1: INSERT image_streams，拿自增 id
+                cur.execute(self._sql(
+                    "INSERT INTO image_streams"
+                    " (ts_start, ts_end, camera, cell, job, kind, codec, container,"
+                    "  frame_count, width, height, size_bytes, data)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                ), (ts_start, ts_end, camera, cell, job, kind, "av1", "ivf",
+                    frame_count, width, height, size_bytes, stream_data))
+                stream_id = int(cur.lastrowid) if cur.lastrowid else 0
+                if not stream_id:
+                    raise RuntimeError("插入 image_streams 失败，未获得自增 id")
+
+                # Step 2: INSERT image_frames（替换为真实 stream_id）
+                for i, (ts, w, h) in enumerate(frames):
+                    cur.execute(self._sql(
+                        "INSERT INTO image_frames"
+                        " (stream_id, frame_index, ts, camera, cell, kind, width, height)"
+                        " VALUES (?,?,?,?,?,?,?,?)"
+                    ), (stream_id, i, ts.isoformat(timespec="milliseconds"),
+                        camera, cell, kind, w, h))
+
+                # Step 3: DELETE 被压缩的原图
+                if image_ids:
+                    marks = ",".join("?" * len(image_ids))
+                    cur.execute(self._sql(f"DELETE FROM images WHERE id IN ({marks})"),
+                                tuple(image_ids))
+
+                self._conn.commit()
+                return stream_id
+            except Exception:
+                try:
+                    cur.execute(self._sql("ROLLBACK"))
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                cur.close()
+
     # ---------- 采样 ----------
 
     def insert_sample(
