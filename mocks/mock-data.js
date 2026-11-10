@@ -465,6 +465,15 @@
     return item;
   }
 
+  function updateReport(id, patch) {
+    const list = reports();
+    const hit = list.find(r => r.id === id);
+    if (!hit) return null;
+    Object.assign(hit, patch);
+    writeJSON(LS.reports, list);
+    return hit;
+  }
+
   function removeReport(id) {
     writeJSON(LS.reports, reports().filter(r => r.id !== id));
   }
@@ -478,6 +487,6 @@
     STATIONS, cameraInfo, hourStats, summary, ngEvents, hoursText, fmtHour,
     frame, getDraft, saveDraft, deleteDraft, draftDays, emptyDraft,
     tickets, addTicket, updateTicket, saveTickets,
-    reports, addReport, removeReport, resetAll
+    reports, addReport, updateReport, removeReport, resetAll
   };
 })();

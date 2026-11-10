@@ -15,7 +15,11 @@
     speed: 1,
     limit: 8,
     genTimers: [],
-    view: 'write'
+    view: 'write',
+    tasks: [],
+    taskSeq: 0,
+    genTask: null,
+    taskOpen: false
   };
 
   // ---------------- 通用 ----------------
@@ -611,90 +615,284 @@
 
   function openAnnot(cam, ts) { annot.open(cam, ts); }
 
-  // ---------------- 生成 ----------------
-  const STAGES = [
-    '按小时聚合 C11 统计',
-    '读取 NG / OK 图像（含 AV1 解码）',
-    '生成工作簿与单元格样式',
-    '注入 DISPIMG 内嵌图',
-    '渲染 PDF（A3 横版 · 米黄底）',
-    '写入数据库（report_files 分块）',
-    '落盘 xlsx / pdf'
+  // ---------------- 后台任务 ----------------
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+
+  const PHASES = [
+    { key: 'stats',     label: '按小时聚合 C11 统计', ms: 420 },
+    { key: 'images',    label: '读取 NG / OK 图像（含 AV1 解码）', ms: 620 },
+    { key: 'xlsx',      label: '生成工作簿与单元格样式', ms: 620 },
+    { key: 'dispimg',   label: '注入 DISPIMG 内嵌图', ms: 700 },
+    { key: 'pdf',       label: '渲染 PDF（A3 横版 · 米黄底）', ms: 700 },
+    { key: 'store',     label: '写入数据库（report_files 分块）', ms: 520 },
+    { key: 'save_xlsx', label: '落盘 xlsx', ms: 320, total: 28.6 },
+    { key: 'save_pdf',  label: '落盘 pdf',  ms: 320, total: 15.2 }
   ];
+
+  function hoursLabel() {
+    return M.hoursText([...state.hours].sort((a, b) => a - b));
+  }
+
+  function runningTask(kind) {
+    return state.tasks.find(t => (!kind || t.kind === kind) && t.status === 'running');
+  }
+
+  function createTask(kind, title) {
+    const t = {
+      id: `t-${Date.now().toString(36)}-${++state.taskSeq}`,
+      kind, title,
+      status: 'running', percent: 0, message: '准备中…', phaseLabel: '',
+      cancelable: true, result: null, timers: [], startedAt: Date.now()
+    };
+    state.tasks.unshift(t);
+    renderTasks();
+    return t;
+  }
+
+  function taskTick(t, fn, delay) {
+    const id = setTimeout(() => {
+      t.timers = t.timers.filter(x => x !== id);
+      fn();
+    }, delay / state.speed);
+    t.timers.push(id);
+  }
+
+  function clearTaskTimers(t) {
+    t.timers.forEach(clearTimeout);
+    t.timers = [];
+  }
+
+  function setTask(t, patch) {
+    Object.assign(t, patch);
+    renderTasks();
+    if (t === state.genTask) syncGenModal(t);
+  }
+
+  function runTaskSteps(t, steps, onDone) {
+    let i = 0;
+    const run = () => {
+      if (t.status !== 'running') return;      // 已取消
+      if (i >= steps.length) { onDone(); return; }
+      const s = steps[i++];
+      setTask(t, { phaseLabel: s.phase, percent: s.pct, message: s.message });
+      taskTick(t, run, s.ms);
+    };
+    run();
+  }
+
+  function buildGenerateSteps() {
+    const steps = [];
+    PHASES.forEach((p, idx) => {
+      const rep = p.total ? 10 : 5;
+      for (let k = 1; k <= rep; k++) {
+        const local = Math.round(k / rep * 100);
+        steps.push({
+          phase: p.key,
+          pct: Math.min(99, Math.round((idx + k / rep) / PHASES.length * 100)),
+          ms: p.ms,
+          message: p.total
+            ? `${p.label} ${(p.total * local / 100).toFixed(1)} / ${p.total} MB`
+            : p.label
+        });
+      }
+    });
+    return steps;
+  }
+
+  function renderTasks() {
+    const widget = $('#taskWidget');
+    if (!state.tasks.length) { widget.classList.add('hidden'); return; }
+    widget.classList.remove('hidden');
+    const active = state.tasks.filter(t => t.status === 'running').length;
+    $('#taskCount').textContent = active ? `后台任务 ${active}` : '任务记录';
+    $('#taskBadge').classList.toggle('busy', !!active);
+    const tagMap = { running: '运行中', done: '已完成', partial: '部分完成', failed: '失败', canceled: '已取消' };
+    $('#taskList').innerHTML = state.tasks.map(t => {
+      const cls = t.status === 'done' ? 'ok' : t.status === 'partial' ? 'warn' : (t.status === 'canceled' ? 'mute' : '');
+      return `<div class="task-item ${cls}">
+        <div class="task-title"><b>${esc(t.title)}</b><span class="task-tag">${tagMap[t.status] || t.status}</span></div>
+        <div class="task-track"><div class="task-fill" style="width:${t.percent}%"></div></div>
+        <div class="task-msg">${esc(t.message)}</div>
+        <div class="task-actions">
+          ${t.status === 'running' && t.cancelable ? `<button class="btn sm" data-cancel="${t.id}">取消</button>` : ''}
+          ${(t.status === 'partial' || t.status === 'failed') ? `<button class="btn sm primary" data-retry="${t.id}">重试落盘</button>` : ''}
+          ${(t.status === 'done' || t.status === 'partial') ? `<button class="btn sm ghost" data-view="${t.id}">查看存档</button>` : ''}
+          ${t.status !== 'running' ? `<button class="btn sm ghost" data-dismiss="${t.id}">×</button>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+    $('#taskList').querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => cancelTask(byId(b.dataset.cancel)));
+    $('#taskList').querySelectorAll('[data-retry]').forEach(b => b.onclick = () => retryTask(byId(b.dataset.retry)));
+    $('#taskList').querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
+      switchView('archive');
+      $('#taskPanel').classList.add('hidden');
+      state.taskOpen = false;
+    });
+    $('#taskList').querySelectorAll('[data-dismiss]').forEach(b => b.onclick = () => {
+      state.tasks = state.tasks.filter(t => t.id !== b.dataset.dismiss);
+      renderTasks();
+    });
+  }
+
+  function byId(id) { return state.tasks.find(t => t.id === id); }
+
+  function fadeTask(id) {
+    state.tasks = state.tasks.filter(t => t.id !== id);
+    renderTasks();
+  }
 
   function generate() {
     if (!state.hours.size) { toast('请至少勾选 1 个小时'); return; }
+    if (runningTask('generate')) { toast('已有生成任务在后台运行（见右下角任务面板）'); return; }
     saveNow('manual');
+    const t = createTask('generate', `生成 ${state.day} 报告（${hoursLabel()}）`);
+    state.genTask = t;
+    openGenModal(t);
+    runTaskSteps(t, buildGenerateSteps(), () => finishGenerate(t));
+  }
+
+  function openGenModal(t) {
     $('#genOverlay').classList.remove('hidden');
     $('#genProgress').hidden = false;
     $('#genResult').hidden = true;
     $('#genClose').hidden = true;
+    $('#genBg').hidden = false;
     $('#genCancel').hidden = false;
+    $('#genHint').textContent = '后台任务运行中，可转入后台继续编辑';
     $('#genOpenXlsx').hidden = true;
     $('#genArchive').hidden = true;
-    $('#genFill').style.width = '0%';
-    $('#genHint').textContent = '生成中，请勿关闭页面';
-    const stages = $('#stageList');
-    stages.innerHTML = STAGES.map((s, i) =>
-      `<div class="stage" data-i="${i}"><span class="ico">○</span><span>${s}</span></div>`).join('');
-    state.genTimers.forEach(t => clearTimeout(t));
-    state.genTimers = [];
-    let i = 0;
-    const step = () => {
-      if (i > 0) {
-        const prev = stages.querySelector(`[data-i="${i - 1}"]`);
-        prev.classList.add('done');
-        prev.querySelector('.ico').textContent = '✓';
-      }
-      if (i >= STAGES.length) { finish(); return; }
-      const cur = stages.querySelector(`[data-i="${i}"]`);
-      cur.classList.add('active');
-      cur.querySelector('.ico').textContent = '◐';
-      $('#genFill').style.width = Math.round((i + 1) / STAGES.length * 100) + '%';
-      const t = setTimeout(() => { i++; step(); }, 420 + Math.random() * 360);
-      state.genTimers.push(t);
-    };
-    step();
+    $('#genMsg').textContent = t ? t.message : '';
+    $('#stageList').innerHTML = PHASES.map(p =>
+      `<div class="stage" data-phase="${p.key}"><span class="ico">○</span><span>${p.label}</span></div>`).join('');
+    if (t) syncGenModal(t);
   }
 
-  function finish() {
+  function syncGenModal(t) {
+    if ($('#genOverlay').classList.contains('hidden')) return;
+    $('#genFill').style.width = t.percent + '%';
+    $('#genMsg').textContent = t.message;
+    const keys = PHASES.map(p => p.key);
+    const cur = keys.indexOf(t.phaseLabel);
+    const done = t.status === 'done';
+    const running = t.status === 'running';
+    document.querySelectorAll('#stageList .stage').forEach((el, i) => {
+      el.classList.toggle('active', i === cur && running);
+      el.classList.toggle('done', i < cur || done);
+      el.querySelector('.ico').textContent = (i < cur || done) ? '✓' : (i === cur && running ? '◐' : '○');
+    });
+  }
+
+  function newReportRecord() {
     const rows = M.summary(state.day, [...state.hours]);
     const total = rows.reduce((s, r) => s + r.total, 0);
     const ng = rows.reduce((s, r) => s + r.ng, 0);
     const d = new Date();
     const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-    const xlsx = `视觉改善分析报告_${stamp}.xlsx`;
-    const pdf = `视觉改善分析报告_${stamp}.pdf`;
-    const rep = M.addReport({
+    return M.addReport({
       created_at: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`,
       day: state.day,
       hoursText: M.hoursText([...state.hours].sort((a, b) => a - b)),
       total, ng,
       xlsx_kb: 1800 + Math.round(ng * 8.5),
       pdf_kb: 900 + Math.round(ng * 5.2),
-      saved: true, xlsx_name: xlsx, pdf_name: pdf
+      saved: true,
+      xlsx_name: `视觉改善分析报告_${stamp}.xlsx`,
+      pdf_name: `视觉改善分析报告_${stamp}.pdf`
+    });
+  }
+
+  function finishGenerate(t) {
+    if (t.status !== 'running') return;
+    const rep = newReportRecord();
+    setTask(t, {
+      status: 'done', percent: 100, cancelable: false, message: '已完成：已入库并落盘 xlsx + pdf', result: rep
     });
     $('#genProgress').hidden = true;
     $('#genResult').hidden = false;
     $('#genHint').textContent = '完成';
     $('#genCancel').hidden = true;
+    $('#genBg').hidden = true;
     $('#genClose').hidden = false;
     $('#genOpenXlsx').hidden = false;
     $('#genArchive').hidden = false;
     $('#resId').textContent = '#' + rep.id;
-    $('#resXlsx').textContent = xlsx;
-    $('#resPdf').textContent = pdf;
+    $('#resXlsx').textContent = rep.xlsx_name;
+    $('#resPdf').textContent = rep.pdf_name;
     $('#resDb').textContent = `reports #${rep.id} + report_files（xlsx ${Math.round(rep.xlsx_kb / 1024 * 10) / 10}MB / pdf ${Math.round(rep.pdf_kb / 1024 * 10) / 10}MB）`;
     $('#resXlsx').onclick = (e) => { e.preventDefault(); toast('Mock：真实环境会调用 os.startfile 打开 xlsx'); };
     $('#resPdf').onclick = (e) => { e.preventDefault(); toast('Mock：真实环境会打开 PDF'); };
     state.generated = rep;
+    renderArchive();
+    setTimeout(() => fadeTask(t.id), 8000);
+  }
+
+  function cancelTask(t) {
+    if (!t || t.status !== 'running' || !t.cancelable) return;
+    clearTaskTimers(t);
+    const saving = (t.phaseLabel || '').indexOf('save_') === 0;
+    let rep = t.result;
+    if (saving && !rep) rep = newReportRecord();   // 入库已完成，落盘被取消 → 库中留档
+    setTask(t, {
+      status: saving ? 'partial' : 'canceled',
+      cancelable: false,
+      result: rep || null,
+      message: saving ? '落盘已取消：已删除 .tmp 半文件，库中存档保留，可重试落盘' : '已取消：未写库、未落盘'
+    });
+    if (saving) renderArchive();
+    if (t === state.genTask) {
+      $('#genCancel').hidden = true;
+      $('#genBg').hidden = true;
+      $('#genClose').hidden = false;
+      $('#genHint').textContent = saving ? '已存档，落盘被取消' : '已取消生成';
+      $('#genMsg').textContent = t.message;
+      $('#genFill').style.width = t.percent + '%';
+    }
+    toast(t.message);
   }
 
   function cancelGen() {
-    state.genTimers.forEach(t => clearTimeout(t));
-    state.genTimers = [];
-    $('#genOverlay').classList.add('hidden');
-    toast('已取消生成');
+    const t = runningTask('generate');
+    if (!t) { $('#genOverlay').classList.add('hidden'); return; }
+    cancelTask(t);
+  }
+
+  function exportTask(rep) {
+    if (!rep) return;
+    if (runningTask('export')) { toast('已有落盘任务在队列中，请稍候'); return; }
+    const t = createTask('export', `重新落盘 #${rep.id}（${rep.day}）`);
+    const xTotal = rep.xlsx_kb / 1024;
+    const pTotal = rep.pdf_kb / 1024;
+    const steps = [];
+    for (let k = 1; k <= 10; k++) {
+      steps.push({
+        phase: 'save_xlsx', pct: Math.round(k / 2), ms: 300,
+        message: `落盘 xlsx ${(xTotal * k / 10).toFixed(1)} / ${xTotal.toFixed(1)} MB`
+      });
+    }
+    for (let k = 1; k <= 8; k++) {
+      steps.push({
+        phase: 'save_pdf', pct: 50 + Math.round(k / 8 * 50), ms: 300,
+        message: `落盘 pdf ${(pTotal * k / 8).toFixed(1)} / ${pTotal.toFixed(1)} MB`
+      });
+    }
+    runTaskSteps(t, steps, () => {
+      M.updateReport(rep.id, { saved: true });
+      setTask(t, { status: 'done', percent: 100, cancelable: false, message: `已落盘 #${rep.id}`, result: rep });
+      renderArchive();
+      toast('落盘完成 #' + rep.id);
+      setTimeout(() => fadeTask(t.id), 8000);
+    });
+  }
+
+  function retryTask(t) {
+    if (!t) return;
+    const rep = t.result || { id: 0, day: state.day, xlsx_kb: 2000, pdf_kb: 1000 };
+    exportTask(rep);
+    t.status = 'canceled';
+    t.message = '已重新提交落盘任务';
+    renderTasks();
   }
 
   // ---------------- 存档 ----------------
@@ -719,10 +917,12 @@
         <td>
           <button class="btn ghost sm" data-xlsx>下载xlsx</button>
           <button class="btn ghost sm" data-pdf>下载pdf</button>
+          <button class="btn ghost sm" data-export>重新落盘</button>
           <button class="btn ghost sm" data-del style="color:var(--red)">删除</button>
         </td>`;
       tr.querySelector('[data-xlsx]').onclick = () => toast('Mock：从数据库流式下载 xlsx');
       tr.querySelector('[data-pdf]').onclick = () => toast('Mock：从数据库流式下载 pdf');
+      tr.querySelector('[data-export]').onclick = () => { exportTask(r); toast('已提交后台落盘任务'); };
       tr.querySelector('[data-del]').onclick = () => {
         if (!confirm(`删除存档 #${r.id}？将同时删除库记录与落盘文件。`)) return;
         M.removeReport(r.id);
@@ -877,6 +1077,21 @@
 
     $('#genCancel').addEventListener('click', cancelGen);
     $('#genClose').addEventListener('click', () => $('#genOverlay').classList.add('hidden'));
+    $('#genBg').addEventListener('click', () => {
+      $('#genOverlay').classList.add('hidden');
+      $('#taskPanel').classList.remove('hidden');
+      toast('已转入后台，可继续编辑（右下角查看进度）');
+    });
+
+    $('#taskBadge').addEventListener('click', () => {
+      const panel = $('#taskPanel');
+      panel.classList.toggle('hidden');
+      state.taskOpen = !panel.classList.contains('hidden');
+    });
+    $('#taskFold').addEventListener('click', () => {
+      $('#taskPanel').classList.add('hidden');
+      state.taskOpen = false;
+    });
     $('#genArchive').addEventListener('click', () => {
       $('#genOverlay').classList.add('hidden');
       switchView('archive');

@@ -362,6 +362,7 @@
     <div class="dialog-body">
       <div id="genProgress">
         <div class="progress-track"><div class="progress-fill" id="genFill"></div></div>
+        <div class="gen-msg" id="genMsg"></div>
         <div class="stage-list" id="stageList"></div>
       </div>
       <div id="genResult" hidden>
@@ -380,10 +381,24 @@
     </div>
     <div class="dialog-foot">
       <button class="btn" id="genClose" hidden>关闭</button>
+      <button class="btn" id="genBg">转入后台</button>
       <button class="btn danger" id="genCancel">取消</button>
       <button class="btn" id="genOpenXlsx" hidden>打开 xlsx</button>
       <button class="btn primary" id="genArchive" hidden>查看存档</button>
     </div>
+  </div>
+</div>
+
+<!-- 后台任务面板（右下角） -->
+<div id="taskWidget" class="task-widget hidden">
+  <button class="task-badge" id="taskBadge"><span class="pulse"></span><span id="taskCount">后台任务</span></button>
+  <div class="task-panel hidden" id="taskPanel">
+    <div class="task-head">
+      <b>后台任务</b>
+      <span class="hint">生成 / 落盘均在后台执行，关闭页面不中断</span>
+      <button class="btn ghost sm" id="taskFold">收起</button>
+    </div>
+    <div class="task-list" id="taskList"></div>
   </div>
 </div>
 
