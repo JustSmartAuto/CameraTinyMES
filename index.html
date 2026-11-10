@@ -125,6 +125,8 @@
   <div class="deskbar-item"><a href="#readme-db">数据库连接（MariaDB）</a></div>
   <div class="deskbar-item"><a href="#readme-av1">AV1 帧序列压缩</a></div>
   <div class="deskbar-item"><a href="#readme-label">误判标注</a></div>
+  <div class="deskbar-item"><a href="#readme-report">当日改善分析报告</a></div>
+  <div class="deskbar-item"><a href="#readme-roadmap">路线图（未完成规划）</a></div>
   <div class="deskbar-item"><a href="#dbreport">数据库分析报告</a></div>
   <div class="deskbar-item"><a href="#dbreport-design">设计特点分析</a></div>
   <div class="deskbar-item"><a href="#dbreport-compare">对比与启示</a></div>
@@ -177,14 +179,12 @@
     </ul>
     <h3>MES 功能（本项目新增）</h3>
     <ul>
-      <li><strong>产品追溯</strong>：以工件 / 批次号为主线，串联 检测时间、相机、单元格数据与 OK/NG 判定</li>
-      <li><strong>生产记录</strong>：班次 / 工单 / 产品型号维度的产量统计（总数 / OK 数 / NG 数 / 直通率）</li>
-      <li><strong>质量看板</strong>：按时间、产品、相机等多维度统计良率、超差率、CPK 等指标</li>
-      <li><strong>NG 分析</strong>：NG 明细查询与导出（xlsx + CSV），辅助根本原因分析</li>
       <li><strong>报表导出</strong>：xlsx 报表按 相机/日期/单元格 生成工作表，文件名自动追加时间戳防覆盖</li>
-      <li><strong>可视化</strong>：折线 / 散点 / 趋势图，中文字体内嵌 <code>assets/</code>，不依赖系统字体</li>
+      <li><strong>可视化</strong>：折线 / 散点 / 趋势图（虚线基线 = 参考值/阈值，红色段 = 超差）并附 均值 / 标准差 / CPK / 超差率，中文字体内嵌 <code>assets/</code></li>
       <li><strong>人工复核（误判标注）</strong>：对生产数据中的误判图片进行人工复核——绘制方框 ROI 圈出误判之处，并填写误判原因 / 注意点说明；标注结果按 <strong>XAnyLabeling 3.3.x</strong> 格式存储，可直接用于其他视觉算法训练学习误判区分</li>
+      <li><strong>当日改善分析报告</strong>（已实现，详见 <a href="#readme-report">同名章节</a>）：选日期 + 勾小时 → 统计各工站 NG/OK 与不良率 → 取证据图 → 生成 <strong>xlsx（WPS <code>DISPIMG</code> 嵌入单元格）+ PDF（A3 横版单页米黄底）</strong>，先入库再落盘；配套局域网 Web 工作台（快速 tag、草稿、标注、工单闭环、后台任务中心）</li>
     </ul>
+    <blockquote>产品追溯、生产记录、质量看板、NG 明细导出等 MES 扩展功能<strong>尚未实现</strong>，与报告侧待验证项一并列在 <a href="#readme-roadmap">路线图</a>。</blockquote>
 
     <h2>技术要点</h2>
     <table>
@@ -195,6 +195,10 @@
       <tr><td>GigE 工业相机</td><td>GigE Vision / GenICam 取像（帧回调触发采样与判定）</td></tr>
       <tr><td>数据存储</td><td>优先连接 MariaDB（工控机可经 <code>reference/mariadb_installer.py</code> 安装）；连接不可用时自动回退到标准库 <code>sqlite3</code> 单文件数据库（WAL 模式），保证最小可用性</td></tr>
       <tr><td>报表</td><td><code>openpyxl</code>（xlsx）</td></tr>
+      <tr><td>改善报告（xlsx）</td><td><code>openpyxl</code> 生成版面 + WPS <code>DISPIMG</code> 公式把图片嵌入单元格（自行注入 <code>xl/cellimages.xml</code>），失败自动降级浮动图片</td></tr>
+      <tr><td>改善报告（PDF）</td><td><code>reportlab</code>：A3 横版单页、米黄纸底 <code>#FBF3DC</code>、中文字体内嵌</td></tr>
+      <tr><td>Web 工作台</td><td>标准库 <code>ThreadingHTTPServer</code> + 原生 HTML/CSS/JS 单页（无框架、无 CDN），默认 <code>0.0.0.0:18110</code>，端口占用自动顺延</td></tr>
+      <tr><td>后台任务</td><td><code>tasks.py</code>：单线程队列、进度回调、取消、<code>dedupe_key</code> 去重、部分完成（<code>partial</code>）状态</td></tr>
       <tr><td>图表</td><td><code>matplotlib</code>（中文字体从 <code>assets/*.ttf</code> 加载）</td></tr>
       <tr><td>界面</td><td>tkinter（多相机宫格布局，参照 CameraHelper）</td></tr>
       <tr><td>打包</td><td>PyInstaller 单文件 exe，logo 使用 <code>assets/app_icon.ico</code></td></tr>
@@ -209,8 +213,16 @@
       <tr><td><code>image_frames</code></td><td>分片帧索引</td><td><code>stream_id</code>、<code>frame_index</code>、<code>ts</code>、<code>camera</code>、<code>cell</code>、<code>kind</code></td></tr>
       <tr><td><code>events</code></td><td>轻量异常事件（断线 / NG 突发）</td><td><code>camera</code>、<code>cell</code>、<code>code</code>、首次 / 末次发生、恢复时间、状态</td></tr>
       <tr><td><code>annotations</code></td><td>误判人工复核标注</td><td><code>image_id</code>、<code>label</code>、<code>description</code>、<code>json</code>（XAnyLabeling 3.3.x）</td></tr>
+      <tr><td><code>schema_meta</code></td><td>schema 版本号（规则同软件版本 <code>YY.MM.DD.N</code>）</td><td><code>key</code>、<code>value</code>、<code>updated_at</code></td></tr>
+      <tr><td><code>reports</code></td><td>改善报告存档头</td><td><code>day</code>、<code>hours</code>、<code>filename</code>、<code>xlsx_size</code> / <code>pdf_size</code>、<code>xlsx_sha256</code> / <code>pdf_sha256</code>、<code>stations</code> / <code>products</code> / <code>ng</code>、<code>payload_json</code>、<code>saved_xlsx_path</code> / <code>saved_pdf_path</code></td></tr>
+      <tr><td><code>report_files</code></td><td>报告文件二进制分块</td><td><code>report_id</code>、<code>kind</code>（<code>xlsx</code> / <code>pdf</code>）、<code>part_no</code>（1 MB 分块）、<code>data</code></td></tr>
+      <tr><td><code>report_tags</code></td><td>快速 tag（人工复核口径）</td><td><code>day</code>、<code>camera</code>、<code>cell</code>、<code>ts</code>、<code>tag</code>（<code>misjudge</code> / <code>product</code> / <code>external</code>）、<code>reviewer</code>、<code>note</code></td></tr>
+      <tr><td><code>report_drafts</code></td><td>报告工作台草稿（乐观锁）</td><td><code>day</code>、<code>hours</code>、<code>payload_json</code>、<code>updated_at</code>、<code>updated_by</code></td></tr>
+      <tr><td><code>tickets</code></td><td>改善工单（类 GitHub Issue）</td><td><code>title</code>、<code>body</code>、<code>measure</code>、<code>status</code>、<code>priority</code>、<code>category</code>、<code>station</code>、<code>camera</code>、<code>assignee</code>、<code>due_date</code>、<code>closed_at</code></td></tr>
+      <tr><td><code>ticket_reports</code></td><td>工单 ↔ 报告双向关联</td><td><code>ticket_id</code>、<code>report_id</code>、<code>station</code>、<code>created_at</code></td></tr>
+      <tr><td><code>ticket_events</code></td><td>工单时间线</td><td><code>ticket_id</code>、<code>ts</code>、<code>actor</code>、<code>kind</code>（<code>created</code>/<code>comment</code>/<code>status</code>/<code>assign</code>/<code>link_report</code>/<code>measure</code>）、<code>payload</code></td></tr>
     </table>
-    <p>相机与单元格配置存于 <code>config/cameras.json</code>，不入库。</p>
+    <p>六张采集表 + 八张业务表（报告存档 4 张、schema 版本 1 张、工单 3 张）。相机与单元格配置存于 <code>config/cameras.json</code>，报告生成选项存于 <code>config/report.json</code>，均不入库。</p>
     <p><code>job</code> 为拍照时相机运行的作业名（<code>GET cam0/hmi/job/name</code>，如 <code>myjob.jobx</code>），连上相机即读取、之后每 10 秒刷新；换配方时自动封掉旧的 AV1 分片，一个分片只属于一种配方。按 <code>job</code> 分组即可统计各配方的 NG 率 / 误判率。</p>
     <blockquote>具体表结构以 <code>src/cameratinymes/storage.py</code> 实际代码为准。</blockquote>
 
@@ -299,11 +311,115 @@
 }</code></pre>
     <blockquote><code>imagePath</code> 仅保留文件名作展示用途，训练读取以 <code>imageData</code> 为准。</blockquote>
 
+    <h2 id="readme-report">当日改善分析报告</h2>
+    <p>面向客户的「视觉改善分析报告」：按日期 + 小时统计不良，自动取证据图，输出 xlsx（WPS 单元格内嵌图）与 A3 PDF，并把原因与改善措施挂到工单上闭环。</p>
+
+    <h3>入口与载体</h3>
+    <ul>
+      <li><strong>桌面端</strong>：工具栏「改善报告」、数据菜单「生成改善报告…」、托盘菜单「改善报告工作台」</li>
+      <li><strong>入口对话框</strong>：选日期（只列有产线记录的日期）+ 勾小时（快捷：全选 / 0点-当前小时 / 清空 / 仅NG时段），并显示本机与局域网访问地址</li>
+      <li><strong>载体</strong>：内嵌 Web 工作台（单页，无框架），默认 <code>http://&lt;本机IP&gt;:18110/report</code>；地址 / 端口 / 口令在「系统 → 设置 → 改善报告工作台」</li>
+      <li><strong>端口顺延</strong>：默认端口被占用时自动 +1（最多 20 次），实际端口写回 <code>settings.json</code> 并在 <code>reports/.web_port</code> 留痕</li>
+      <li><strong>安全边界</strong>：监听默认 <code>0.0.0.0</code>（其他工控机可连）；打开桌面入口、打开 / 删除存档等敏感操作只允许<strong>回环地址</strong>；可设访问口令（cookie <code>ctm_token</code> / <code>?k=</code> / <code>X-CTM-Token</code>），请求体上限 1 MB</li>
+    </ul>
+
+    <h3>统计口径</h3>
+    <ul>
+      <li><code>H</code> NG 总数（NG 事件数）、<code>I</code> 视觉NG = <code>H - J</code>、<code>J</code> 其他NG = 人工 tag 之和（<code>M</code> 误判 + <code>X</code> 产品自身NG + 外部原因…）</li>
+      <li>tag 可人工覆盖；tag 之和超过 <code>H</code> 时截断到 <code>H</code>，不出现负数</li>
+      <li>工站识别：相机配置 <code>station</code> 优先，缺失按相机名前缀 <code>OPxx</code> 推断；<code>station_name</code> 与 <code>model</code> 分别填报告 C、B 列</li>
+      <li>时段默认：当日 0 点→当前小时，历史日期全天</li>
+    </ul>
+
+    <h3>取图规则</h3>
+    <ul>
+      <li><strong>NG 证据帧</strong>：NG 事件时间与 A0 帧时间最近且相差 ≤ 5 秒；渲染图（<code>kind=render</code>）优先，缺失回退原图并在工作台标「原图」角标</li>
+      <li><strong>OK 参考图</strong>：时段内 OK 记录时间中位数附近取一帧，匹配窗口 5 秒 → 60 秒 → 300 秒逐级放宽</li>
+      <li>每工站最多 12 张 NG 图（报告 M..X 列），单图长边压到 800 px 以内</li>
+    </ul>
+
+    <h3>输出规范</h3>
+    <table>
+      <tr><th>产物</th><th>说明</th></tr>
+      <tr><td>工作表</td><td>主表名 = 统计日期（如 <code>11月10日</code>），另附「数据核对」表（逐相机 OK/NG 与 tag 分布）</td></tr>
+      <tr><td>列</td><td>A 序号、B No.、C 工站&amp;机台、D 相机型号&amp;站名、E 实物图片、F OK相机图片、G 生产总数、H NG总数、I 视觉NG、J 其他NG、K、L 原因分析及改造解决方案、M..X NG 图</td></tr>
+      <tr><td>隐藏列</td><td>E（实物图片）与 F（OK 相机图片）默认隐藏，按需用工作台「显示实物图片」开关打开</td></tr>
+      <tr><td>DISPIMG</td><td>图片以 <code>=_xlfn.DISPIMG("ID_xxx",1)</code> 公式嵌入单元格，并注入 <code>xl/cellimages.xml</code> + 关系文件 + <code>Content_Types</code> 清理；嵌入失败自动降级为浮动图片并记录警告</td></tr>
+      <tr><td>PDF</td><td>A3 横版单页（1190.55 × 841.89 pt）、米黄纸底 <code>#FBF3DC</code>、中文字体内嵌，跳过隐藏列、一页自适应</td></tr>
+      <tr><td>文件名</td><td><code>视觉改善分析报告_{yyyyMMddHHmmss}.xlsx</code> / <code>.pdf</code>，写入数据目录的 <code>reports/</code></td></tr>
+    </table>
+
+    <h3>存档与落盘</h3>
+    <ul>
+      <li><strong>先入库再落盘</strong>：<code>reports</code> 存档头 + <code>report_files</code> 每 1 MB 分块（含 sha256）→ 再按 1 MB 分块原子写盘</li>
+      <li>入库成功但落盘失败或被取消时，任务标记为<strong>部分完成</strong>，存档仍可在工作台下载</li>
+      <li>存档视图：列出历史报告（日期、小时、工站数、产品数、NG、文件大小），支持下载 / 重新导出 / 删除；显示存储占用统计</li>
+      <li>保留策略：<code>report_keep_days</code>（默认 90 天）、<code>report_keep_count</code>（默认 200 条），启动时清理 <code>*.tmp</code> 残留</li>
+    </ul>
+
+    <h3>工单闭环</h3>
+    <ul>
+      <li>右栏可按工站勾选或新建工单；分类 <code>misjudge</code> / <code>product</code> / <code>external</code> / <code>other</code>，责任人默认「视觉相关人员」</li>
+      <li>未闭环工单的「改善措施」自动追加到报告「原因分析及改造解决方案」正文</li>
+      <li>工单详情含状态机（<code>open</code> → <code>in_progress</code> → <code>done</code> → <code>closed</code>）与时间线（创建 / 评论 / 状态 / 指派 / 关联报告 / 改善措施）</li>
+      <li>编辑采用乐观锁（<code>base_updated_at</code>），冲突返回 409 并提示覆盖</li>
+    </ul>
+
+    <h3>后台任务</h3>
+    <ul>
+      <li>生成与导出统一提交到 <code>TaskManager</code>，页面右下角任务面板轮询进度，可取消</li>
+      <li>同一「日期 + 小时」重复提交自动去重（<code>dedupe_key</code>）；程序重启时未完成任务标记为「已中断」</li>
+    </ul>
+
+    <h3>相关配置</h3>
+    <p><code>config/settings.json</code>：</p>
+    <table>
+      <tr><th>配置项</th><th>说明</th><th>默认值</th></tr>
+      <tr><td><code>web_host</code></td><td>监听地址（<code>0.0.0.0</code> = 局域网可访问，<code>127.0.0.1</code> = 仅本机）</td><td><code>0.0.0.0</code></td></tr>
+      <tr><td><code>web_port</code></td><td>监听端口（被占用时自动顺延并写回）</td><td><code>18110</code></td></tr>
+      <tr><td><code>web_token</code></td><td>访问口令，空 = 关闭</td><td>空</td></tr>
+      <tr><td><code>project_name</code> / <code>destination</code> / <code>line_name</code></td><td>报告标题与抬头信息</td><td>空</td></tr>
+    </table>
+    <p><code>config/report.json</code>：</p>
+    <table>
+      <tr><th>配置项</th><th>说明</th><th>默认值</th></tr>
+      <tr><td><code>image_embed</code></td><td><code>dispimg</code>（WPS 嵌入单元格）/ <code>floating</code>（浮动图片）</td><td><code>dispimg</code></td></tr>
+      <tr><td><code>pdf_engine</code></td><td><code>reportlab</code> / <code>com</code></td><td><code>reportlab</code></td></tr>
+      <tr><td><code>ng_images_per_station</code></td><td>每工站 NG 图上限（1~8）</td><td><code>6</code></td></tr>
+      <tr><td><code>image_max_edge</code></td><td>嵌入图片长边上限（px，200~2000）</td><td><code>800</code></td></tr>
+      <tr><td><code>reviewer</code></td><td>默认编制人 / 审核人</td><td>空</td></tr>
+      <tr><td><code>op_aggregate</code></td><td>数量聚合方式 <code>median</code> / <code>max</code> / <code>first</code></td><td><code>median</code></td></tr>
+      <tr><td><code>report_keep_days</code> / <code>report_keep_count</code></td><td>存档保留天数 / 条数（0 = 不限）</td><td><code>90</code> / <code>200</code></td></tr>
+    </table>
+
     <h2>开发 / 运行</h2>
     <pre><code>uv sync                              # 安装依赖
 uv run mes                           # 启动应用
 uv run mes --simulate                # 启动内置模拟相机离线体验完整流程
 uv run python build_exe.py           # PyInstaller 打包 dist/exe_{yyyyMMddHHmmss}.exe</code></pre>
+    <p>应用启动时会自动拉起改善报告 Web 工作台：本机访问 <code>http://127.0.0.1:18110/report</code>，其他工控机访问 <code>http://&lt;本机IP&gt;:18110/report</code>。端口被占用时实际端口写入 <code>settings.json</code> 的 <code>web_port</code>，也可在「系统 → 设置 → 改善报告工作台」修改监听地址 / 端口 / 口令。</p>
+
+    <h2 id="readme-roadmap">路线图（未完成规划）</h2>
+    <h3>报告功能现场验证</h3>
+    <ul>
+      <li>用真实一天数据与客户模板逐格对比（列宽、行高、合并、图片位置、字体）</li>
+      <li>WPS（<code>DISPIMG</code> 单元格内嵌）、Excel（自动降级浮动图片）、PDF 三种打开方式的现场确认</li>
+      <li>单页容量评估：NG 图超过 12 张 / 工站较多时的多页排版方案</li>
+    </ul>
+    <h3>MES 功能</h3>
+    <ul>
+      <li><strong>产品追溯</strong>：以工件 / 批次号串联检测记录（依赖扫码数据，跨相机产品关联后置）</li>
+      <li><strong>生产记录</strong>：班次 / 工单 / 产品型号维度的产量与直通率统计</li>
+      <li><strong>质量看板</strong>：跨日期 / 产品 / 相机的良率、超差率、CPK 汇总</li>
+      <li><strong>NG 明细导出</strong>：NG 明细查询与 xlsx + CSV 导出</li>
+    </ul>
+    <h3>采集与事件</h3>
+    <ul>
+      <li><code>events</code> 表接入采集端写入（相机断线、NG 突发），并在工作台提示</li>
+      <li>规格版本管理：把 <code>ParameterSpecs.Version</code> 一类规格版本落到判定与报告快照</li>
+    </ul>
+    <h3>明确不做（与非目标保持一致）</h3>
+    <p>自动缺陷分类 / 自动归因、PPT 输出、客户 MES 序列号对齐、报告多用户权限、工单通知（邮件 / IM）、工时与成本核算、附件上传、甘特图、与客户系统同步。</p>
   </div>
 </div>
 
