@@ -79,6 +79,7 @@ IDI_APPLICATION = 32512
 
 MENU_SHOW = 5001
 MENU_QUIT = 5002
+MENU_REPORT = 5003
 
 
 # --- 结构体 ---
@@ -155,10 +156,11 @@ def _load_ico() -> wt.HICON:
 class TrayIcon:
     """托盘宿主：独立消息窗口线程，回调经 tk.after 派回 Tk 主线程。"""
 
-    def __init__(self, tk, on_show, on_quit) -> None:
+    def __init__(self, tk, on_show, on_quit, on_report=None) -> None:
         self.tk = tk
         self.on_show = on_show   # 显示主窗口
         self.on_quit = on_quit   # 真正退出（封存 + 保存 + 销毁）
+        self.on_report = on_report  # 打开改善报告工作台（可为空）
         self._hwnd: wt.HWND | None = None
         self._hicon: wt.HICON | None = None
         self._ready = threading.Event()
@@ -251,6 +253,8 @@ class TrayIcon:
     def _popup_menu(self, hwnd) -> None:
         menu = user32.CreatePopupMenu()
         user32.AppendMenuW(menu, 0, MENU_SHOW, "显示主窗口")
+        if self.on_report is not None:
+            user32.AppendMenuW(menu, 0, MENU_REPORT, "改善报告工作台")
         user32.AppendMenuW(menu, 0, MENU_QUIT, "退出")
         user32.SetForegroundWindow(hwnd)
         pt = wt.POINT()
@@ -263,5 +267,7 @@ class TrayIcon:
         user32.DestroyMenu(menu)
         if chosen == MENU_SHOW:
             self.tk.after(0, self.on_show)
+        elif chosen == MENU_REPORT and self.on_report is not None:
+            self.tk.after(0, self.on_report)
         elif chosen == MENU_QUIT:
             self.tk.after(0, self.on_quit)

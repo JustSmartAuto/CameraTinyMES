@@ -11,7 +11,8 @@ import logging
 import queue
 import threading
 import unicodedata
-from datetime import datetime
+import webbrowser
+from datetime import date, datetime
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
@@ -192,6 +193,178 @@ class CameraPanel(tk.Frame):
                 tip.text = text
 
 
+class ReportEntryDialog(_IconToplevel):
+    """「生成改善分析报告」入口：选日期 + 勾小时 + 展示访问地址。"""
+
+    def __init__(self, parent, storage, cameras, url_provider,
+                 default_day: str | None = None,
+                 default_hours: list[int] | None = None):
+        super().__init__(parent)
+        self.title("生成改善分析报告")
+        self.result: tuple[str, list[int]] | None = None
+        self._storage = storage
+        self._cameras = cameras
+        self._urls = url_provider
+        self.configure(bg=C["chrome"])
+        self.maxsize(780, 560)
+        theme.title_tab(self, "生成改善分析报告")
+
+        dates = [str(d) for d in storage.days_with_results("C11", limit=365)]
+        today = date.today().isoformat()
+        if today not in dates:
+            dates.insert(0, today)
+        self._dates = dates
+
+        top = tk.Frame(self, bg=C["chrome"])
+        top.pack(fill="x", padx=10, pady=(8, 4))
+        tk.Label(top, text="统计日期", bg=C["chrome"], fg=C["ink"],
+                 font=theme.FONT_BOLD).pack(side="left")
+        self._day_var = tk.StringVar(value=default_day or today)
+        combo = ttk.Combobox(top, textvariable=self._day_var, values=dates,
+                             state="readonly", width=14)
+        combo.pack(side="left", padx=6)
+        combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_day(None))
+        tk.Label(top, text="（只列有产线记录的日期，倒序）", bg=C["chrome"],
+                 fg=C["chrome_dark"], font=theme.FONT).pack(side="left")
+
+        hours_frame = tk.LabelFrame(self, text="统计时段（勾选小时）", bg=C["chrome"],
+                                    fg=C["ink"], font=theme.FONT, labelanchor="nw")
+        hours_frame.pack(fill="x", padx=10, pady=4)
+        self._hour_vars: list[tuple[tk.BooleanVar, tk.Checkbutton]] = []
+        for hour in range(24):
+            var = tk.BooleanVar(value=False)
+            check = tk.Checkbutton(hours_frame, text=str(hour), variable=var,
+                                   bg=C["chrome"], fg=C["ink"], font=theme.FONT,
+                                   activebackground=C["chrome"], selectcolor="#ffffff",
+                                   command=self._refresh)
+            check.grid(row=hour // 12, column=hour % 12, sticky="w", padx=2, pady=1)
+            self._hour_vars.append((var, check))
+
+        quick = tk.Frame(self, bg=C["chrome"])
+        quick.pack(fill="x", padx=10, pady=2)
+        for label, command in (("全选", self._select_all),
+                               ("0点-当前小时", self._select_to_now),
+                               ("清空", self._clear),
+                               ("仅NG时段", self._select_ng)):
+            theme.beos_button(quick, label, command).pack(side="left", padx=3)
+
+        self._hint = tk.Label(self, text="", bg=C["chrome"], fg=C["teal"],
+                              font=theme.FONT, anchor="w", justify="left")
+        self._hint.pack(fill="x", padx=10, pady=2)
+
+        addr = tk.LabelFrame(self, text="访问地址", bg=C["chrome"], fg=C["ink"],
+                             font=theme.FONT, labelanchor="nw")
+        addr.pack(fill="x", padx=10, pady=4)
+        self._local_var = tk.StringVar()
+        self._lan_var = tk.StringVar()
+        tk.Label(addr, textvariable=self._local_var, bg=C["chrome"], fg=C["ink"],
+                 font=theme.FONT, anchor="w").pack(fill="x", padx=6, pady=1)
+        tk.Label(addr, textvariable=self._lan_var, bg=C["chrome"], fg=C["chrome_darker"],
+                 font=theme.FONT, anchor="w").pack(fill="x", padx=6, pady=1)
+        tk.Label(addr, text="其他工控机可直接打开局域网地址；首次监听 0.0.0.0 时"
+                            "请放行专用网络该端口。", bg=C["chrome"],
+                 fg=C["chrome_dark"], font=theme.FONT, anchor="w").pack(
+            fill="x", padx=6, pady=(0, 4))
+
+        btns = tk.Frame(self, bg=C["chrome"])
+        btns.pack(fill="x", padx=10, pady=8)
+        theme.beos_button(btns, "复制局域网地址", self._copy_lan).pack(side="left", padx=3)
+        theme.beos_button(btns, "取消", self.destroy).pack(side="right", padx=3)
+        self._open_btn = theme.beos_button(btns, "打开工作台", self._ok, default=True)
+        self._open_btn.pack(side="right", padx=3)
+
+        self._apply_day(default_hours)
+        self.grab_set()
+        parent.wait_window(self)
+
+    # --- 小时状态 ---
+
+    def _allowed_hours(self) -> set[int]:
+        day_text = self._day_var.get()
+        if day_text == date.today().isoformat():
+            return set(range(datetime.now().hour + 1))
+        return set(range(24))
+
+    def _apply_day(self, hours: list[int] | None) -> None:
+        allowed = self._allowed_hours()
+        if hours is None:
+            hours = sorted(allowed)
+        selected = {int(h) for h in hours if int(h) in allowed}
+        for hour, (var, check) in enumerate(self._hour_vars):
+            var.set(hour in selected)
+            check.config(state="normal" if hour in allowed else "disabled")
+        self._refresh()
+
+    def _current_hours(self) -> list[int]:
+        return [hour for hour, (var, _check) in enumerate(self._hour_vars) if var.get()]
+
+    def _select_all(self) -> None:
+        for hour, (var, check) in enumerate(self._hour_vars):
+            if str(check["state"]) != "disabled":
+                var.set(True)
+        self._refresh()
+
+    def _select_to_now(self) -> None:
+        limit = datetime.now().hour
+        for hour, (var, check) in enumerate(self._hour_vars):
+            if str(check["state"]) != "disabled":
+                var.set(hour <= limit)
+        self._refresh()
+
+    def _clear(self) -> None:
+        for var, _check in self._hour_vars:
+            var.set(False)
+        self._refresh()
+
+    def _select_ng(self) -> None:
+        try:
+            ng_hours = set(int(h) for h in self._storage.ng_hours(self._day_var.get()))
+        except Exception:
+            ng_hours = set()
+        if not ng_hours:
+            self._select_all()
+            return
+        for hour, (var, check) in enumerate(self._hour_vars):
+            if str(check["state"]) != "disabled":
+                var.set(hour in ng_hours)
+        self._refresh()
+
+    def _station_count(self) -> int:
+        from .report import station_of
+
+        grouped = {station_of(cam)[0] for cam in self._cameras if cam.enabled}
+        return len(grouped)
+
+    def _refresh(self) -> None:
+        hours = self._current_hours()
+        day = date.fromisoformat(self._day_var.get())
+        urls = self._urls(day, hours) if hours else self._urls(day, [])
+        self._local_var.set("本机    " + urls["local"])
+        self._lan_var.set("局域网  " + (urls["lan"] or "（未检测到局域网地址）"))
+        self._lan_url = urls["lan"] or urls["local"]
+        if hours:
+            self._hint.config(
+                text=f"已勾选 {len(hours)} 小时，涉及 {self._station_count()} 个工站；"
+                     f"生成时按这些时段统计与取图。", fg=C["teal"])
+        else:
+            self._hint.config(text="尚未勾选统计小时，无法生成报告。", fg=C["red_dot"])
+        self._open_btn.config(state="normal" if hours else "disabled")
+
+    def _copy_lan(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(self._lan_url)
+        self._hint.config(text="已复制局域网地址到剪贴板。", fg=C["teal"])
+
+    def _ok(self) -> None:
+        hours = self._current_hours()
+        if not hours:
+            messagebox.showwarning("生成改善分析报告", "请至少勾选 1 个统计小时。",
+                                   parent=self)
+            return
+        self.result = (self._day_var.get(), hours)
+        self.destroy()
+
+
 class MonitorApp:
     def __init__(self, data_dir, cameras: list[CameraConfig],
                  settings: AppSettings | None = None,
@@ -221,13 +394,19 @@ class MonitorApp:
         self._start_asyncio_thread()
 
         # 托盘图标 + 启动时最小化
-        self._tray = TrayIcon(self.root, on_show=self._show_window, on_quit=self._really_quit)
+        self._tray = TrayIcon(self.root, on_show=self._show_window,
+                              on_quit=self._really_quit,
+                              on_report=self.open_report_workbench)
         self._tray.start()
         if self.settings.minimize_to_tray_on_start and self._tray.available:
             self.root.after(200, self._hide_to_tray)
 
         # 后台 AV1 压缩守护线程（扫描 images 表，批量打包成 30 帧 GOP 的 AV1 分片）
         self.monitor.start_compressor()
+
+        # 改善报告工作台（Web 服务随主程序启动，端口被占用时自动顺延）
+        self._report_server = None
+        self.root.after(300, self._start_report_server)
 
     # ---------- UI 构建 ----------
 
@@ -253,6 +432,7 @@ class MonitorApp:
         theme.beos_button(bar, "添加相机", self.add_camera).pack(side="left", padx=3)
         theme.beos_button(bar, "配置单元格", self.edit_camera).pack(side="left", padx=3)
         theme.beos_button(bar, "打开数据目录", self.open_data_dir).pack(side="left", padx=3)
+        theme.beos_button(bar, "改善报告", self.open_report_workbench).pack(side="left", padx=3)
         self.db_status = tk.Label(bar, text="数据库 连接中…", bg=C["chrome"],
                                   fg=C["chrome_dark"], font=theme.FONT_BOLD)
         self.db_status.pack(side="right", padx=8)
@@ -295,6 +475,8 @@ class MonitorApp:
         data_menu = tk.Menu(menubar, tearoff=0)
         data_menu.add_command(label="删除相机数据", command=self.delete_camera_data)
         data_menu.add_command(label="导出", command=self.export_data)
+        data_menu.add_separator()
+        data_menu.add_command(label="生成改善报告…", command=self.open_report_workbench)
         menubar.add_cascade(label="数据", menu=data_menu)
         sys_menu = tk.Menu(menubar, tearoff=0)
         sys_menu.add_command(label="设置…", command=self.show_settings)
@@ -713,6 +895,70 @@ class MonitorApp:
         import os
         os.startfile(self.data_dir)  # noqa: S606 - Windows only
 
+    # ---------- 改善报告工作台 ----------
+
+    def _start_report_server(self) -> None:
+        """启动报告工作台 Web 服务（失败只记日志，不影响采集主流程）。"""
+        from . import web
+
+        try:
+            port = web.start_web_server(
+                self.storage, self.cameras, self.settings, self.data_dir,
+                on_open_entry=self._open_entry_from_web)
+            self._report_server = web.get_web_server()
+            urls = self._report_server.urls()
+            self._log(f"改善报告工作台已启动：{urls['local']}")
+            if urls["lan"]:
+                self._log(f"局域网访问：{urls['lan']}")
+        except Exception as exc:
+            log.exception("报告工作台启动失败")
+            self._report_server = None
+            self._log(f"改善报告工作台启动失败：{exc}（可在设置中修改 web_port）")
+
+    def open_report_workbench(self) -> None:
+        """入口对话框 → 记住日期/小时 → 打开浏览器工作台。"""
+        if self._report_server is None:
+            self._start_report_server()
+        if self._report_server is None:
+            messagebox.showerror("改善报告", "报告工作台服务未启动，请检查日志或端口占用。",
+                                 parent=self.root)
+            return
+        self._report_server.cameras = list(self.cameras)
+        dialog = ReportEntryDialog(
+            self.root, self.storage, self.cameras,
+            url_provider=self._report_server.urls)
+        if not dialog.result:
+            return
+        day_text, hours = dialog.result
+        self._show_window()
+        urls = self._report_server.urls(date.fromisoformat(day_text), hours)
+        webbrowser.open(urls["local"])
+        self._log(f"打开改善报告工作台：{urls['local']}")
+
+    def _open_entry_from_web(self, day_text: str, hours: list[int]) -> None:
+        """网页点「重新选择」→ 在 Tk 主线程弹出同一入口对话框，结果回传网页。"""
+        done = threading.Event()
+        outcome: dict = {}
+
+        def show() -> None:
+            try:
+                self._show_window()
+                dialog = ReportEntryDialog(
+                    self.root, self.storage, self.cameras,
+                    url_provider=self._report_server.urls,
+                    default_day=day_text, default_hours=hours)
+                outcome["value"] = dialog.result
+            except Exception:
+                log.exception("网页触发入口对话框失败")
+            finally:
+                done.set()
+
+        self.root.after(0, show)
+        done.wait(600)
+        value = outcome.get("value")
+        if value:
+            self._report_server.entry_result = {"date": value[0], "hours": value[1]}
+
     # ---------- 生命周期 & 托盘 ----------
 
     def on_close(self) -> None:
@@ -749,6 +995,12 @@ class MonitorApp:
         self._db_stop.set()
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.monitor.stop_compressor()  # 停止后台 AV1 压缩守护线程
+        try:
+            from . import web
+
+            web.stop_web_server()  # 关闭报告工作台（含后台任务）
+        except Exception:
+            log.debug("关闭报告工作台失败", exc_info=True)
         self.storage.close()
         save_config(self.data_dir, self.cameras)
         save_settings(self.data_dir, self.settings)
@@ -761,10 +1013,18 @@ class MonitorApp:
     # ---------- 设置 ----------
 
     def show_settings(self) -> None:
+        before = (self.settings.web_host, self.settings.web_port, self.settings.web_token)
         dlg = SettingsDialog(self.root, self.settings, self.data_dir)
         if dlg.result:
             self.settings = dlg.result
             save_settings(self.data_dir, self.settings)
+            after = (self.settings.web_host, self.settings.web_port, self.settings.web_token)
+            if after != before:
+                from . import web
+
+                web.stop_web_server()
+                self._report_server = None
+                self._start_report_server()
             self._log(f"设置已保存 → {self.settings}")
 
     def run(self) -> None:
@@ -1461,6 +1721,7 @@ class SettingsDialog(_IconToplevel):
         self.configure(bg=C["chrome"])
         theme.title_tab(self, "应用设置")
         self._data_dir = data_dir
+        self._settings = settings
 
         body = tk.Frame(self, bg=C["chrome"])
         body.pack(fill="both", expand=True, padx=12, pady=10)
@@ -1504,6 +1765,38 @@ class SettingsDialog(_IconToplevel):
             bg=C["chrome"], fg=C["chrome_dark"], font=theme.FONT,
         ).pack(anchor="w", padx=24)
 
+        # 改善报告工作台
+        tk.Frame(body, bg=C["chrome"], height=1).pack(fill="x", pady=10)
+        tk.Label(body, text="改善报告工作台", bg=C["chrome"], fg=C["ink"],
+                 font=theme.FONT_BOLD, anchor="w").pack(anchor="w")
+
+        grid = tk.Frame(body, bg=C["chrome"])
+        grid.pack(fill="x", padx=12, pady=4)
+        self._host_var = tk.StringVar(value=settings.web_host or "0.0.0.0")
+        self._port_var = tk.StringVar(value=str(settings.web_port or 18110))
+        self._token_var = tk.StringVar(value=settings.web_token or "")
+        self._project_var = tk.StringVar(value=settings.project_name or "")
+        self._dest_var = tk.StringVar(value=settings.destination or "")
+        self._line_var = tk.StringVar(value=settings.line_name or "")
+        rows = (
+            ("监听地址", self._host_var, 16),
+            ("端口", self._port_var, 8),
+            ("访问口令", self._token_var, 16),
+            ("项目名称", self._project_var, 20),
+            ("目的地", self._dest_var, 14),
+            ("产线", self._line_var, 14),
+        )
+        for index, (label, var, width) in enumerate(rows):
+            tk.Label(grid, text=label, bg=C["chrome"], fg=C["ink"],
+                     font=theme.FONT, width=8, anchor="e").grid(
+                row=index, column=0, sticky="e", padx=(0, 6), pady=2)
+            tk.Entry(grid, textvariable=var, width=width, font=theme.FONT).grid(
+                row=index, column=1, sticky="w", pady=2)
+        tk.Label(body, text="监听 0.0.0.0 允许局域网其他工控机访问；口令留空表示不校验。"
+                            "修改监听地址/端口后会自动重启工作台。",
+                 bg=C["chrome"], fg=C["chrome_dark"], font=theme.FONT,
+                 justify="left", wraplength=440).pack(anchor="w", padx=24, pady=(2, 0))
+
         # 实时状态
         from . import autostart as _as
         system_on = _as.is_enabled()
@@ -1527,11 +1820,28 @@ class SettingsDialog(_IconToplevel):
         parent.wait_window(self)
 
     def _ok(self) -> None:
+        from dataclasses import replace
+
         from . import autostart as _as
 
-        new = AppSettings(
+        try:
+            port = int(self._port_var.get().strip() or self._settings.web_port)
+        except ValueError:
+            messagebox.showerror("设置", "端口必须是数字。", parent=self)
+            return
+        if not 1024 <= port <= 65535:
+            messagebox.showerror("设置", "端口需在 1024~65535 之间。", parent=self)
+            return
+        new = replace(
+            self._settings,
             minimize_to_tray_on_start=self._min_var.get(),
             autostart_enabled=self._auto_var.get(),
+            web_host=self._host_var.get().strip() or "0.0.0.0",
+            web_port=port,
+            web_token=self._token_var.get().strip(),
+            project_name=self._project_var.get().strip(),
+            destination=self._dest_var.get().strip(),
+            line_name=self._line_var.get().strip(),
         )
         # 同步系统侧自启状态
         if new.autostart_enabled:

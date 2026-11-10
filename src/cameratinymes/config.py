@@ -86,6 +86,9 @@ class CameraConfig:
     cells: list[CellConfig] = field(default_factory=list)
     reconnect_interval: float = 5.0
     enabled: bool = True
+    station: str = ""       # 工站号（OP10）；空则按相机名前缀推断
+    station_name: str = ""  # 工站名（管壳合件组装）；报告 C 列第二行
+    model: str = ""         # 机型/产品型号；报告 B 列
 
     @property
     def ws_url(self) -> str:
@@ -188,6 +191,14 @@ class AppSettings:
 
     minimize_to_tray_on_start: bool = False  # 启动时是否最小化到托盘
     autostart_enabled: bool = False          # 开机自启（shell:startup 快捷方式）
+    # 改善报告抬头默认值（报告页可逐次覆盖）
+    project_name: str = ""
+    destination: str = ""
+    line_name: str = ""
+    # 改善报告工作台（内嵌 Web）
+    web_host: str = "0.0.0.0"   # 0.0.0.0=局域网可访问；127.0.0.1=仅本机
+    web_port: int = 18110       # 被占用时启动时自动顺延并写回
+    web_token: str = ""         # 访问口令；空=关闭
 
 
 def settings_path(data_dir: Path) -> Path:
@@ -205,6 +216,12 @@ def load_settings(data_dir: Path) -> AppSettings:
     return AppSettings(
         minimize_to_tray_on_start=bool(raw.get("minimize_to_tray_on_start", False)),
         autostart_enabled=bool(raw.get("autostart_enabled", False)),
+        project_name=str(raw.get("project_name", "")),
+        destination=str(raw.get("destination", "")),
+        line_name=str(raw.get("line_name", "")),
+        web_host=str(raw.get("web_host", "0.0.0.0") or "0.0.0.0"),
+        web_port=int(raw.get("web_port", 18110) or 18110),
+        web_token=str(raw.get("web_token", "")),
     )
 
 
@@ -213,5 +230,61 @@ def save_settings(data_dir: Path, settings: AppSettings) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(asdict(settings), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+# ---------- 改善报告配置 ----------
+
+@dataclass
+class ReportConfig:
+    """改善报告选项（持久化到 config/report.json，缺省即默认值）。
+
+    工作台的监听地址/端口/口令放在 settings.json 的 web_host/web_port/web_token
+    （桌面端设置界面可改），这里只放报告生成相关项，避免两套真值。
+    """
+
+    image_embed: str = "dispimg"          # dispimg=WPS 嵌入单元格；floating=浮动图片
+    pdf_engine: str = "reportlab"         # reportlab | com
+    ng_images_per_station: int = 6        # 每工站 NG 图片上限（1~8）
+    image_max_edge: int = 800             # 嵌入/绘制图片长边上限（px）
+    reviewer: str = ""                    # 默认审核人/编制人
+    op_aggregate: str = "median"          # 数量聚合：median | max | first
+    report_keep_days: int = 90            # 存档保留天数（0=不限）
+    report_keep_count: int = 200          # 存档保留条数（0=不限）
+
+
+def report_config_path(data_dir: Path) -> Path:
+    return data_dir / "config" / "report.json"
+
+
+def load_report_config(data_dir: Path) -> ReportConfig:
+    """读取 config/report.json；缺失或字段非法时用默认值。"""
+    path = report_config_path(data_dir)
+    if not path.exists():
+        return ReportConfig()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ReportConfig()
+    if not isinstance(raw, dict):
+        return ReportConfig()
+    return ReportConfig(
+        image_embed=str(raw.get("image_embed", "dispimg")).lower(),
+        pdf_engine=str(raw.get("pdf_engine", "reportlab")).lower(),
+        ng_images_per_station=max(1, min(8, int(raw.get("ng_images_per_station", 6)))),
+        image_max_edge=max(200, min(2000, int(raw.get("image_max_edge", 800)))),
+        reviewer=str(raw.get("reviewer", "")),
+        op_aggregate=str(raw.get("op_aggregate", "median")).lower(),
+        report_keep_days=max(0, int(raw.get("report_keep_days", 90))),
+        report_keep_count=max(0, int(raw.get("report_keep_count", 200))),
+    )
+
+
+def save_report_config(data_dir: Path, config: ReportConfig) -> None:
+    path = report_config_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(asdict(config), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

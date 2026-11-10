@@ -7,11 +7,12 @@ xlsx 按 相机/日期/单元格 导出工作表，文件名带时间戳后缀�
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -20,6 +21,74 @@ from openpyxl.styles import Font, PatternFill
 from .config import DatabaseConfig, MariaDBConfig, load_database_config
 
 log = logging.getLogger(__name__)
+
+# 数据库 schema 版本：规则与软件版本一致（YY.MM.DD.N，N=当日第几次 DDL 变更）
+SCHEMA_VERSION = "26.11.10.1"
+
+# 报告快速 tag / 工单枚举（docs/当日改善报告功能设计.md §3.3、§4.8）
+REPORT_TAGS = ("misjudge", "product", "external")
+TICKET_STATUSES = ("open", "in_progress", "done", "closed")
+TICKET_CLOSE_REASONS = ("duplicate", "wontfix", "invalid", "fixed")
+TICKET_CATEGORIES = ("misjudge", "product", "external", "other")
+TICKET_PRIORITIES = ("P0", "P1", "P2", "P3")
+# 状态机：open→in_progress→done→closed；任意状态可 reopen→open
+TICKET_TRANSITIONS = {
+    "open": {"in_progress", "closed"},
+    "in_progress": {"done", "closed"},
+    "done": {"closed", "in_progress"},
+    "closed": {"open"},
+}
+
+
+class ConflictError(Exception):
+    """乐观锁冲突：草稿已被其他客户端更新。"""
+
+
+def version_tuple(value: str) -> tuple[int, int, int, int]:
+    """四段版本号 → 整数元组；禁止用字符串比较（"26.11.9.30" > "26.11.10.2" 会误判）。"""
+    parts = []
+    for piece in str(value or "").strip().split("."):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            parts.append(0)
+    parts = (parts + [0, 0, 0, 0])[:4]
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="milliseconds")
+
+
+def _ranges_where(ranges: list[tuple[str, str]] | None,
+                  column: str = "ts") -> tuple[str, tuple]:
+    """半开区间 [(start, end), ...] → SQL 条件；空列表表示不限时段。"""
+    ranges = [r for r in (ranges or []) if r and r[0] and r[1]]
+    if not ranges:
+        return "", ()
+    clause = "(" + " OR ".join(f"({column}>=? AND {column}<?)" for _ in ranges) + ")"
+    return clause, tuple(v for r in ranges for v in r)
+
+
+_REPORT_COLUMNS = (
+    "id", "day", "hours", "title", "filename", "xlsx_size", "pdf_size",
+    "xlsx_sha256", "pdf_sha256", "stations", "products", "ng", "payload_json",
+    "created_at", "created_by", "saved_xlsx_path", "saved_pdf_path", "saved_at",
+)
+
+_TICKET_COLUMNS = (
+    "id", "title", "body", "measure", "status", "close_reason", "priority",
+    "category", "station", "camera", "assignee", "due_date", "created_by",
+    "created_at", "updated_at", "closed_at",
+)
+
+
+def _loads(text) -> dict:
+    try:
+        value = json.loads(text or "{}")
+        return value if isinstance(value, dict) else {"value": value}
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
@@ -112,6 +181,106 @@ CREATE TABLE IF NOT EXISTS image_frames (
 );
 CREATE INDEX IF NOT EXISTS idx_frames_cam_cell_ts ON image_frames(camera, cell, kind, ts);
 CREATE INDEX IF NOT EXISTS idx_frames_stream ON image_frames(stream_id, frame_index);
+
+-- ---------- 改善报告（docs/当日改善报告功能设计.md §5.2）----------
+CREATE TABLE IF NOT EXISTS schema_meta (
+    `key`      TEXT PRIMARY KEY,        -- schema_version
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    day             TEXT NOT NULL,
+    hours           TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    filename        TEXT NOT NULL,
+    xlsx_size       INTEGER NOT NULL,
+    pdf_size        INTEGER NOT NULL,
+    xlsx_sha256     TEXT NOT NULL,
+    pdf_sha256      TEXT NOT NULL,
+    stations        INTEGER NOT NULL,
+    products        INTEGER NOT NULL,
+    ng              INTEGER NOT NULL,
+    payload_json    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    created_by      TEXT,
+    saved_xlsx_path TEXT,
+    saved_pdf_path  TEXT,
+    saved_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reports_day ON reports(day, created_at);
+CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
+
+CREATE TABLE IF NOT EXISTS report_files (
+    report_id INTEGER NOT NULL REFERENCES reports (id) ON DELETE CASCADE,
+    kind      TEXT NOT NULL,            -- xlsx | pdf
+    part_no   INTEGER NOT NULL,
+    data      BLOB NOT NULL,
+    PRIMARY KEY (report_id, kind, part_no)
+);
+
+CREATE TABLE IF NOT EXISTS report_tags (
+    day        TEXT NOT NULL,
+    camera     TEXT NOT NULL,
+    cell       TEXT NOT NULL DEFAULT 'C11',
+    ts         TEXT NOT NULL,
+    tag        TEXT NOT NULL,           -- misjudge | product | external
+    reviewer   TEXT,
+    note       TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (day, camera, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_report_tags_day_tag ON report_tags(day, tag);
+CREATE INDEX IF NOT EXISTS idx_report_tags_cam_ts ON report_tags(camera, ts);
+
+CREATE TABLE IF NOT EXISTS report_drafts (
+    day          TEXT PRIMARY KEY,
+    hours        TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    updated_by   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT NOT NULL,
+    body         TEXT NOT NULL DEFAULT '',
+    measure      TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'open',
+    close_reason TEXT,
+    priority     TEXT NOT NULL DEFAULT 'P2',
+    category     TEXT NOT NULL DEFAULT 'other',
+    station      TEXT NOT NULL DEFAULT '',
+    camera       TEXT NOT NULL DEFAULT '',
+    assignee     TEXT NOT NULL DEFAULT '',
+    due_date     TEXT,
+    created_by   TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    closed_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_tickets_station ON tickets(station, category);
+
+CREATE TABLE IF NOT EXISTS ticket_reports (
+    ticket_id  INTEGER NOT NULL REFERENCES tickets (id) ON DELETE CASCADE,
+    report_id  INTEGER NOT NULL REFERENCES reports (id) ON DELETE CASCADE,
+    station    TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (ticket_id, report_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_reports_report ON ticket_reports(report_id);
+
+CREATE TABLE IF NOT EXISTS ticket_events (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL REFERENCES tickets (id) ON DELETE CASCADE,
+    ts        TEXT NOT NULL,
+    actor     TEXT,
+    kind      TEXT NOT NULL,            -- created|comment|status|assign|link_report|measure
+    payload   TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_events_ticket ON ticket_events(ticket_id, ts);
 """
 
 # MariaDB 版 schema：与 SQLite 版字段一一对应，仅类型/自增语法不同
@@ -214,6 +383,118 @@ CREATE TABLE IF NOT EXISTS image_frames (
     CONSTRAINT fk_frames_stream FOREIGN KEY (stream_id)
         REFERENCES image_streams (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+    `key` VARCHAR(64) NOT NULL,
+    value VARCHAR(64) NOT NULL,
+    updated_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (`key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS reports (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    day VARCHAR(16) NOT NULL,
+    hours VARCHAR(256) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    xlsx_size BIGINT NOT NULL,
+    pdf_size BIGINT NOT NULL,
+    xlsx_sha256 CHAR(64) NOT NULL,
+    pdf_sha256 CHAR(64) NOT NULL,
+    stations INT NOT NULL,
+    products INT NOT NULL,
+    ng INT NOT NULL,
+    payload_json LONGTEXT NOT NULL,
+    created_at VARCHAR(32) NOT NULL,
+    created_by VARCHAR(64) NULL,
+    saved_xlsx_path VARCHAR(1024) NULL,
+    saved_pdf_path VARCHAR(1024) NULL,
+    saved_at VARCHAR(32) NULL,
+    PRIMARY KEY (id),
+    KEY idx_reports_day (day, created_at),
+    KEY idx_reports_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS report_files (
+    report_id BIGINT NOT NULL,
+    kind VARCHAR(8) NOT NULL,
+    part_no INT NOT NULL,
+    data MEDIUMBLOB NOT NULL,
+    PRIMARY KEY (report_id, kind, part_no),
+    CONSTRAINT fk_report_files_report FOREIGN KEY (report_id)
+        REFERENCES reports (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS report_tags (
+    day VARCHAR(16) NOT NULL,
+    camera VARCHAR(64) NOT NULL,
+    cell VARCHAR(64) NOT NULL DEFAULT 'C11',
+    ts VARCHAR(32) NOT NULL,
+    tag VARCHAR(16) NOT NULL,
+    reviewer VARCHAR(64) NULL,
+    note TEXT NULL,
+    updated_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (day, camera, ts),
+    KEY idx_report_tags_day_tag (day, tag),
+    KEY idx_report_tags_cam_ts (camera, ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS report_drafts (
+    day VARCHAR(16) NOT NULL,
+    hours VARCHAR(256) NOT NULL,
+    payload_json LONGTEXT NOT NULL,
+    updated_at VARCHAR(32) NOT NULL,
+    updated_by VARCHAR(64) NULL,
+    PRIMARY KEY (day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    title VARCHAR(255) NOT NULL,
+    body LONGTEXT NULL,
+    measure LONGTEXT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'open',
+    close_reason VARCHAR(16) NULL,
+    priority VARCHAR(4) NOT NULL DEFAULT 'P2',
+    category VARCHAR(16) NOT NULL DEFAULT 'other',
+    station VARCHAR(32) NOT NULL DEFAULT '',
+    camera VARCHAR(64) NOT NULL DEFAULT '',
+    assignee VARCHAR(64) NOT NULL DEFAULT '',
+    due_date VARCHAR(16) NULL,
+    created_by VARCHAR(64) NULL,
+    created_at VARCHAR(32) NOT NULL,
+    updated_at VARCHAR(32) NOT NULL,
+    closed_at VARCHAR(32) NULL,
+    PRIMARY KEY (id),
+    KEY idx_tickets_status (status, updated_at),
+    KEY idx_tickets_station (station, category)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ticket_reports (
+    ticket_id BIGINT NOT NULL,
+    report_id BIGINT NOT NULL,
+    station VARCHAR(32) NOT NULL DEFAULT '',
+    created_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (ticket_id, report_id),
+    KEY idx_ticket_reports_report (report_id),
+    CONSTRAINT fk_ticket_reports_ticket FOREIGN KEY (ticket_id)
+        REFERENCES tickets (id) ON DELETE CASCADE,
+    CONSTRAINT fk_ticket_reports_report FOREIGN KEY (report_id)
+        REFERENCES reports (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ticket_events (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    ticket_id BIGINT NOT NULL,
+    ts VARCHAR(32) NOT NULL,
+    actor VARCHAR(64) NULL,
+    kind VARCHAR(16) NOT NULL,
+    payload LONGTEXT NULL,
+    PRIMARY KEY (id),
+    KEY idx_ticket_events_ticket (ticket_id, ts),
+    CONSTRAINT fk_ticket_events_ticket FOREIGN KEY (ticket_id)
+        REFERENCES tickets (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 
@@ -269,6 +550,8 @@ class StorageBase:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._conn = None
+        # 数据库 schema 版本高于程序时置 True：本次只读，不写入
+        self.schema_outdated = False
 
     # ---------- 由子类实现 ----------
 
@@ -855,6 +1138,521 @@ class StorageBase:
         args.append(limit)
         return self._fetchall(sql, tuple(args))
 
+    # ---------- 事务 / schema 版本 ----------
+
+    def _transaction(self, fn):
+        """在单事务内执行 fn(cur)：失败整体回滚，成功提交并返回 fn 的结果。"""
+        with self._lock:
+            cur = self._conn._raw.cursor() if hasattr(self._conn, "_raw") else self._conn.cursor()
+            try:
+                cur.execute(self._sql("BEGIN"))
+                result = fn(cur)
+                self._conn.commit()
+                return result
+            except Exception:
+                try:
+                    cur.execute(self._sql("ROLLBACK"))
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                cur.close()
+
+    def _init_schema_meta(self) -> None:
+        """读 schema_meta：新库/旧库写入当前版本；高于程序版本则只读启动。"""
+        rows = self._fetchall(
+            "SELECT value FROM schema_meta WHERE `key`='schema_version'")
+        stored = str(rows[0][0]) if rows else ""
+        if not stored:
+            self._exec_batch([
+                ("DELETE FROM schema_meta WHERE `key`='schema_version'", ()),
+                ("INSERT INTO schema_meta (`key`, value, updated_at)"
+                 " VALUES ('schema_version', ?, ?)", (SCHEMA_VERSION, _now_iso())),
+            ])
+            log.info("初始化数据库 schema 版本：%s", SCHEMA_VERSION)
+            return
+        if version_tuple(stored) > version_tuple(SCHEMA_VERSION):
+            self.schema_outdated = True
+            log.warning("数据库由更新版本创建（schema %s > 程序 %s），请升级程序；"
+                        "本次启动不写入该库", stored, SCHEMA_VERSION)
+            return
+        if version_tuple(stored) < version_tuple(SCHEMA_VERSION):
+            # 增量迁移由各后端 _migrate_schema 幂等完成，这里只更新版本号
+            self._exec_batch([
+                ("DELETE FROM schema_meta WHERE `key`='schema_version'", ()),
+                ("INSERT INTO schema_meta (`key`, value, updated_at)"
+                 " VALUES ('schema_version', ?, ?)", (SCHEMA_VERSION, _now_iso())),
+            ])
+            log.info("数据库 schema 版本 %s → %s", stored, SCHEMA_VERSION)
+
+    # ---------- 改善报告：区间聚合 ----------
+
+    def range_cell_summary(self, cell: str,
+                           ranges: list[tuple[str, str]] | None) -> list[tuple]:
+        """各相机在时段内的结果计数：camera, cell, 总数, OK, NG, 首末时间。"""
+        sql = ("SELECT camera, cell, COUNT(*),"
+               " COALESCE(SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END), 0),"
+               " COALESCE(SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END), 0),"
+               " MIN(ts), MAX(ts)"
+               " FROM samples WHERE cell=? AND ok IS NOT NULL")
+        clause, args = _ranges_where(ranges)
+        if clause:
+            sql += " AND " + clause
+        sql += " GROUP BY camera, cell ORDER BY camera"
+        return self._fetchall(sql, (cell,) + args)
+
+    def range_ng_timestamps(self, camera: str, cell: str,
+                            ranges: list[tuple[str, str]] | None) -> list[str]:
+        """该相机在时段内所有 NG 的 ts（升序），用于抽图与打 tag。"""
+        sql = "SELECT ts FROM samples WHERE camera=? AND cell=? AND ok=0"
+        clause, args = _ranges_where(ranges)
+        if clause:
+            sql += " AND " + clause
+        sql += " ORDER BY ts"
+        return [str(row[0]) for row in self._fetchall(sql, (camera, cell) + args)]
+
+    def range_ok_timestamps(self, camera: str, cell: str,
+                            ranges: list[tuple[str, str]] | None,
+                            limit: int = 2000) -> list[str]:
+        """该相机在时段内 OK 的 ts（升序，最多 limit 条），用于选 OK 参考图。"""
+        sql = "SELECT ts FROM samples WHERE camera=? AND cell=? AND ok=1"
+        clause, args = _ranges_where(ranges)
+        if clause:
+            sql += " AND " + clause
+        sql += " ORDER BY ts LIMIT ?"
+        return [str(row[0]) for row in
+                self._fetchall(sql, (camera, cell) + args + (int(limit),))]
+
+    def range_jobs(self, camera: str,
+                   ranges: list[tuple[str, str]] | None) -> list[tuple[str, int]]:
+        """该相机在时段内运行过的作业（按记录数降序，用于报告 B 列）。"""
+        sql = ("SELECT job, COUNT(*) FROM samples"
+               " WHERE camera=? AND job IS NOT NULL AND job<>''")
+        clause, args = _ranges_where(ranges)
+        if clause:
+            sql += " AND " + clause
+        sql += " GROUP BY job ORDER BY COUNT(*) DESC"
+        return [(str(row[0]), int(row[1])) for row in self._fetchall(sql, (camera,) + args)]
+
+    def days_with_results(self, cell: str = "C11", limit: int = 120) -> list[str]:
+        """有结果记录的日期（倒序），用于入口对话框的日期下拉。"""
+        rows = self._fetchall(
+            "SELECT DISTINCT substr(ts, 1, 10) AS d FROM samples"
+            " WHERE cell=? ORDER BY d DESC LIMIT ?", (cell, int(limit)))
+        return [str(row[0]) for row in rows if row[0]]
+
+    def ng_hours(self, day: str, cell: str = "C11") -> list[int]:
+        """某天存在 NG 的小时（0~23），用于「仅NG时段」快捷勾选。"""
+        start = f"{day}T00:00:00.000"
+        end = (datetime.fromisoformat(day) + timedelta(days=1)).isoformat(
+            timespec="milliseconds")
+        rows = self._fetchall(
+            "SELECT DISTINCT substr(ts, 12, 2) FROM samples"
+            " WHERE cell=? AND ok=0 AND ts>=? AND ts<?", (cell, start, end))
+        return sorted({int(str(row[0])[:2]) for row in rows
+                       if str(row[0])[:2].isdigit()})
+
+    # ---------- 改善报告：存档 ----------
+
+    def insert_report(self, meta: dict, files: dict[str, bytes],
+                      chunk_size: int = 8 * 1024 * 1024,
+                      links: list[tuple[int, str]] | None = None) -> int:
+        """单事务写入 reports + report_files（+ 工单关联），返回 report_id。"""
+        cols = ("day", "hours", "title", "filename", "xlsx_size", "pdf_size",
+                "xlsx_sha256", "pdf_sha256", "stations", "products", "ng",
+                "payload_json", "created_at", "created_by")
+        args = tuple(meta.get(name) for name in cols)
+        sql = (f"INSERT INTO reports ({', '.join(cols)})"
+               f" VALUES ({', '.join(['?'] * len(cols))})")
+        now = _now_iso()
+
+        def run(cur):
+            cur.execute(self._sql(sql), args)
+            report_id = int(cur.lastrowid or 0)
+            for kind, data in files.items():
+                for part_no, offset in enumerate(range(0, len(data), chunk_size)):
+                    cur.execute(
+                        self._sql("INSERT INTO report_files"
+                                  " (report_id, kind, part_no, data) VALUES (?,?,?,?)"),
+                        (report_id, kind, part_no, data[offset:offset + chunk_size]))
+            for ticket_id, station in links or []:
+                cur.execute(
+                    self._sql("INSERT INTO ticket_reports"
+                              " (ticket_id, report_id, station, created_at)"
+                              " VALUES (?,?,?,?)"),
+                    (int(ticket_id), report_id, str(station or ""), now))
+            return report_id
+
+        return self._transaction(run)
+
+    def get_report(self, report_id: int) -> dict | None:
+        rows = self._fetchall(
+            f"SELECT {', '.join(_REPORT_COLUMNS)} FROM reports WHERE id=?", (report_id,))
+        return dict(zip(_REPORT_COLUMNS, rows[0])) if rows else None
+
+    def list_reports(self, day: str | None = None, limit: int = 100,
+                     offset: int = 0) -> list[dict]:
+        sql = f"SELECT {', '.join(_REPORT_COLUMNS)} FROM reports"
+        args: list = []
+        if day:
+            sql += " WHERE day=?"
+            args.append(day)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        args += [int(limit), int(offset)]
+        return [dict(zip(_REPORT_COLUMNS, row))
+                for row in self._fetchall(sql, tuple(args))]
+
+    def load_report_file(self, report_id: int, kind: str) -> bytes | None:
+        """按 part_no 顺序拼接分块，返回完整文件字节。"""
+        rows = self._fetchall(
+            "SELECT data FROM report_files WHERE report_id=? AND kind=?"
+            " ORDER BY part_no", (report_id, kind))
+        if not rows:
+            return None
+        return b"".join(bytes(row[0]) for row in rows)
+
+    def mark_report_saved(self, report_id: int, xlsx_path: str | None = None,
+                          pdf_path: str | None = None) -> None:
+        """落盘成功后回填路径（两个文件可分别成功，故都可选）。"""
+        sets, args = [], []
+        if xlsx_path is not None:
+            sets.append("saved_xlsx_path=?")
+            args.append(xlsx_path)
+        if pdf_path is not None:
+            sets.append("saved_pdf_path=?")
+            args.append(pdf_path)
+        if not sets:
+            return
+        sets.append("saved_at=?")
+        args += [_now_iso(), int(report_id)]
+        self._execute(f"UPDATE reports SET {', '.join(sets)} WHERE id=?", tuple(args))
+
+    def delete_report(self, report_id: int) -> dict | None:
+        """删除存档记录（分块级联删除），返回被删记录供调用方清理磁盘文件。"""
+        report = self.get_report(report_id)
+        if report is None:
+            return None
+        self._execute("DELETE FROM reports WHERE id=?", (int(report_id),))
+        return report
+
+    def report_storage_stats(self) -> dict:
+        rows = self._fetchall(
+            "SELECT COUNT(*), COALESCE(SUM(xlsx_size + pdf_size), 0) FROM reports")
+        count, size = (rows[0][0] or 0, rows[0][1] or 0) if rows else (0, 0)
+        return {"count": int(count), "bytes": int(size)}
+
+    def purge_reports(self, keep_days: int, keep_count: int) -> list[dict]:
+        """按保留天数/条数清理存档，返回被删记录（调用方据此删磁盘文件）。"""
+        doomed: dict[int, dict] = {}
+        if keep_days and keep_days > 0:
+            cutoff = (datetime.now() - timedelta(days=int(keep_days))).isoformat(
+                timespec="milliseconds")
+            rows = self._fetchall(
+                "SELECT id FROM reports WHERE created_at<?", (cutoff,))
+            for (report_id,) in rows:
+                report = self.get_report(int(report_id))
+                if report:
+                    doomed[int(report_id)] = report
+        if keep_count and keep_count > 0:
+            rows = self._fetchall("SELECT id FROM reports ORDER BY created_at DESC")
+            for (report_id,) in rows[int(keep_count):]:
+                report = self.get_report(int(report_id))
+                if report:
+                    doomed[int(report_id)] = report
+        for report_id in doomed:
+            self._execute("DELETE FROM reports WHERE id=?", (report_id,))
+        return list(doomed.values())
+
+    # ---------- 改善报告：快速 tag ----------
+
+    def set_report_tag(self, day: str, camera: str, ts: str, tag: str | None,
+                       reviewer: str = "", note: str = "",
+                       cell: str = "C11") -> None:
+        """写入/取消 tag（tag=None 即取消，删除该 ts 的行）。"""
+        if tag is None:
+            self._execute(
+                "DELETE FROM report_tags WHERE day=? AND camera=? AND ts=?",
+                (day, camera, ts))
+            return
+        if tag not in REPORT_TAGS:
+            raise ValueError(f"未知 tag：{tag}")
+        now = _now_iso()
+        self._exec_batch([
+            ("DELETE FROM report_tags WHERE day=? AND camera=? AND ts=?",
+             (day, camera, ts)),
+            ("INSERT INTO report_tags"
+             " (day, camera, cell, ts, tag, reviewer, note, updated_at)"
+             " VALUES (?,?,?,?,?,?,?,?)",
+             (day, camera, cell, ts, tag, reviewer, note, now)),
+        ])
+
+    def list_report_tags(self, day: str) -> dict[tuple[str, str], str]:
+        """{(camera, ts): tag}"""
+        rows = self._fetchall(
+            "SELECT camera, ts, tag FROM report_tags WHERE day=?", (day,))
+        return {(str(row[0]), str(row[1])): str(row[2]) for row in rows}
+
+    def range_tag_counts(self, camera: str,
+                         ranges: list[tuple[str, str]] | None) -> dict[str, int]:
+        """该相机在时段内各 tag 的数量（misjudge/product/external）。"""
+        sql = "SELECT tag, COUNT(*) FROM report_tags WHERE camera=?"
+        clause, args = _ranges_where(ranges)
+        if clause:
+            sql += " AND " + clause
+        sql += " GROUP BY tag"
+        return {str(row[0]): int(row[1]) for row in self._fetchall(sql, (camera,) + args)}
+
+    # ---------- 改善报告：草稿 ----------
+
+    def get_draft(self, day: str) -> dict | None:
+        rows = self._fetchall(
+            "SELECT day, hours, payload_json, updated_at, updated_by"
+            " FROM report_drafts WHERE day=?", (day,))
+        if not rows:
+            return None
+        hours_text, payload_text = rows[0][1] or "", rows[0][2] or "{}"
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            payload = {}
+        return {
+            "day": rows[0][0],
+            "hours": [int(h) for h in str(hours_text).split(",") if h.strip().isdigit()],
+            "payload": payload,
+            "updated_at": rows[0][3],
+            "updated_by": rows[0][4],
+        }
+
+    def save_draft(self, day: str, hours: list[int], payload: dict,
+                   actor: str = "", base_updated_at: str | None = None,
+                   force: bool = False) -> str:
+        """保存草稿；base_updated_at 与服务端不一致时抛 ConflictError（除非 force）。"""
+        now = _now_iso()
+        hours_text = ",".join(str(h) for h in sorted({int(h) for h in hours}))
+        payload_text = json.dumps(payload, ensure_ascii=False)
+
+        def run(cur):
+            cur.execute(self._sql(
+                "SELECT updated_at FROM report_drafts WHERE day=?"), (day,))
+            row = cur.fetchone()
+            current = str(row[0]) if row else None
+            if current and base_updated_at and current != base_updated_at and not force:
+                raise ConflictError(f"草稿已被他人更新（{current}）")
+            if current is None:
+                cur.execute(self._sql(
+                    "INSERT INTO report_drafts"
+                    " (day, hours, payload_json, updated_at, updated_by)"
+                    " VALUES (?,?,?,?,?)"), (day, hours_text, payload_text, now, actor))
+            else:
+                cur.execute(self._sql(
+                    "UPDATE report_drafts SET hours=?, payload_json=?, updated_at=?,"
+                    " updated_by=? WHERE day=?"),
+                    (hours_text, payload_text, now, actor, day))
+            return now
+
+        return self._transaction(run)
+
+    def delete_draft(self, day: str) -> None:
+        self._execute("DELETE FROM report_drafts WHERE day=?", (day,))
+
+    def list_draft_days(self, limit: int = 60) -> list[dict]:
+        rows = self._fetchall(
+            "SELECT day, updated_at, updated_by FROM report_drafts"
+            " ORDER BY updated_at DESC LIMIT ?", (int(limit),))
+        return [{"day": row[0], "updated_at": row[1], "updated_by": row[2]}
+                for row in rows]
+
+    # ---------- 工单（改善措施）----------
+
+    def create_ticket(self, data: dict, actor: str = "") -> int:
+        title = str(data.get("title") or "").strip()
+        if not title:
+            raise ValueError("工单标题不能为空")
+        category = str(data.get("category") or "other").lower()
+        if category not in TICKET_CATEGORIES:
+            category = "other"
+        priority = str(data.get("priority") or "P2").upper()
+        if priority not in TICKET_PRIORITIES:
+            priority = "P2"
+        now = _now_iso()
+        args = (title[:255], str(data.get("body") or ""),
+                str(data.get("measure") or ""), "open", None, priority, category,
+                str(data.get("station") or ""), str(data.get("camera") or ""),
+                str(data.get("assignee") or "视觉相关人员"), data.get("due_date"),
+                actor, now, now, None)
+
+        def run(cur):
+            cur.execute(self._sql(
+                "INSERT INTO tickets (title, body, measure, status, close_reason,"
+                " priority, category, station, camera, assignee, due_date, created_by,"
+                " created_at, updated_at, closed_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"), args)
+            ticket_id = int(cur.lastrowid or 0)
+            cur.execute(self._sql(
+                "INSERT INTO ticket_events (ticket_id, ts, actor, kind, payload)"
+                " VALUES (?,?,?,?,?)"),
+                (ticket_id, now, actor, "created",
+                 json.dumps({"title": title}, ensure_ascii=False)))
+            return ticket_id
+
+        return self._transaction(run)
+
+    def update_ticket(self, ticket_id: int, patch: dict, actor: str = "") -> dict:
+        """更新工单字段；状态变更校验状态机并记时间线。"""
+        ticket = self.get_ticket(ticket_id, with_events=False, with_reports=False)
+        if ticket is None:
+            raise KeyError(f"工单不存在：{ticket_id}")
+        current = ticket["status"]
+        allowed = ("title", "body", "measure", "status", "close_reason", "priority",
+                   "category", "station", "camera", "assignee", "due_date")
+        changes = {k: v for k, v in (patch or {}).items() if k in allowed}
+        new_status = changes.get("status")
+        if new_status is not None:
+            new_status = str(new_status)
+            if new_status not in TICKET_STATUSES:
+                raise ValueError(f"未知工单状态：{new_status}")
+            if new_status != current and new_status not in TICKET_TRANSITIONS.get(current, set()):
+                raise ValueError(f"不允许的状态变更：{current} → {new_status}")
+        now = _now_iso()
+        sets, args = [], []
+        for key, value in changes.items():
+            sets.append(f"{key}=?")
+            args.append(value)
+        if new_status == "closed" and current != "closed":
+            sets.append("closed_at=?")
+            args.append(now)
+        elif new_status == "open" and current == "closed":
+            sets.append("closed_at=?")
+            args.append(None)
+            sets.append("close_reason=?")
+            args.append(None)
+        sets.append("updated_at=?")
+        args.append(now)
+        args.append(int(ticket_id))
+
+        events = []
+        if new_status and new_status != current:
+            events.append(("status", {"from": current, "to": new_status,
+                                      "reason": changes.get("close_reason")}))
+        if "assignee" in changes and changes["assignee"] != ticket.get("assignee"):
+            events.append(("assign", {"from": ticket.get("assignee"),
+                                      "to": changes["assignee"]}))
+        if "measure" in changes and changes["measure"] != ticket.get("measure"):
+            events.append(("measure", {"text": str(changes["measure"])[:500]}))
+        if "body" in changes and changes["body"] != ticket.get("body"):
+            events.append(("comment", {"text": str(changes["body"])}))
+
+        def run(cur):
+            cur.execute(self._sql(f"UPDATE tickets SET {', '.join(sets)} WHERE id=?"),
+                        tuple(args))
+            for kind, payload in events:
+                cur.execute(self._sql(
+                    "INSERT INTO ticket_events (ticket_id, ts, actor, kind, payload)"
+                    " VALUES (?,?,?,?,?)"),
+                    (int(ticket_id), now, actor, kind,
+                     json.dumps(payload, ensure_ascii=False)))
+            return None
+
+        self._transaction(run)
+        return self.get_ticket(ticket_id) or {}
+
+    def add_ticket_event(self, ticket_id: int, kind: str, payload: dict,
+                         actor: str = "") -> None:
+        now = _now_iso()
+        self._exec_batch([
+            ("INSERT INTO ticket_events (ticket_id, ts, actor, kind, payload)"
+             " VALUES (?,?,?,?,?)",
+             (int(ticket_id), now, actor, kind,
+              json.dumps(payload or {}, ensure_ascii=False))),
+            ("UPDATE tickets SET updated_at=? WHERE id=?", (now, int(ticket_id))),
+        ])
+
+    def link_report_to_ticket(self, ticket_id: int, report_id: int,
+                              station: str = "", actor: str = "") -> None:
+        now = _now_iso()
+        self._exec_batch([
+            ("DELETE FROM ticket_reports WHERE ticket_id=? AND report_id=?",
+             (int(ticket_id), int(report_id))),
+            ("INSERT INTO ticket_reports (ticket_id, report_id, station, created_at)"
+             " VALUES (?,?,?,?)", (int(ticket_id), int(report_id), station, now)),
+        ])
+        self.add_ticket_event(ticket_id, "link_report",
+                              {"report_id": int(report_id), "station": station}, actor)
+
+    def unlink_report_from_ticket(self, ticket_id: int, report_id: int,
+                                  actor: str = "") -> None:
+        self._exec_batch([
+            ("DELETE FROM ticket_reports WHERE ticket_id=? AND report_id=?",
+             (int(ticket_id), int(report_id))),
+            ("UPDATE tickets SET updated_at=? WHERE id=?", (_now_iso(), int(ticket_id))),
+        ])
+        self.add_ticket_event(ticket_id, "unlink_report",
+                              {"report_id": int(report_id)}, actor)
+
+    def list_tickets(self, statuses: list[str] | None = None, station: str | None = None,
+                     category: str | None = None, q: str | None = None,
+                     limit: int = 200, offset: int = 0) -> list[dict]:
+        sql = f"SELECT {', '.join(_TICKET_COLUMNS)} FROM tickets"
+        where, args = [], []
+        if statuses:
+            where.append(f"status IN ({', '.join(['?'] * len(statuses))})")
+            args.extend(statuses)
+        if station:
+            where.append("station=?")
+            args.append(station)
+        if category:
+            where.append("category=?")
+            args.append(category)
+        if q:
+            where.append("(title LIKE ? OR body LIKE ? OR measure LIKE ?)")
+            like = f"%{q}%"
+            args.extend([like, like, like])
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += (" ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1"
+                " WHEN 'done' THEN 2 ELSE 3 END, updated_at DESC LIMIT ? OFFSET ?")
+        args += [int(limit), int(offset)]
+        return [dict(zip(_TICKET_COLUMNS, row)) for row in self._fetchall(sql, tuple(args))]
+
+    def get_ticket(self, ticket_id: int, with_events: bool = True,
+                   with_reports: bool = True) -> dict | None:
+        rows = self._fetchall(
+            f"SELECT {', '.join(_TICKET_COLUMNS)} FROM tickets WHERE id=?",
+            (int(ticket_id),))
+        if not rows:
+            return None
+        ticket = dict(zip(_TICKET_COLUMNS, rows[0]))
+        if with_events:
+            events = self._fetchall(
+                "SELECT id, ts, actor, kind, payload FROM ticket_events"
+                " WHERE ticket_id=? ORDER BY ts, id", (int(ticket_id),))
+            ticket["events"] = [
+                {"id": row[0], "ts": row[1], "actor": row[2], "kind": row[3],
+                 "payload": _loads(row[4])}
+                for row in events
+            ]
+        if with_reports:
+            links = self._fetchall(
+                "SELECT tr.report_id, tr.station, tr.created_at, r.day, r.filename,"
+                " r.created_at FROM ticket_reports tr"
+                " LEFT JOIN reports r ON r.id = tr.report_id"
+                " WHERE tr.ticket_id=? ORDER BY tr.created_at DESC", (int(ticket_id),))
+            ticket["reports"] = [
+                {"report_id": row[0], "station": row[1], "linked_at": row[2],
+                 "day": row[3], "filename": row[4], "report_created_at": row[5],
+                 "purged": row[4] is None}
+                for row in links
+            ]
+        return ticket
+
+    def ticket_status_counts(self) -> dict[str, int]:
+        rows = self._fetchall("SELECT status, COUNT(*) FROM tickets GROUP BY status")
+        counts = {name: 0 for name in TICKET_STATUSES}
+        for row in rows:
+            counts[str(row[0])] = int(row[1])
+        return counts
+
     def close(self) -> None:
         with self._lock:
             if self._conn is not None:
@@ -876,6 +1674,7 @@ class SQLiteStorage(StorageBase):
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
         self._migrate_schema()
+        self._init_schema_meta()
         self._conn.commit()
 
     def _migrate_schema(self) -> None:
@@ -936,6 +1735,7 @@ class MariaDBStorage(StorageBase):
                 if stmt.strip():
                     self._execute(stmt)
             self._migrate_schema()
+            self._init_schema_meta()
         except Exception as exc:
             self.close()
             raise RuntimeError(f"MariaDB 不可用（{target}）：{exc}") from exc

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>改善报告工作台</title>
+<link rel="stylesheet" href="/webui/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="title-row">
+      <div class="tab active" data-view="report">工作台</div>
+      <div class="tab" data-view="archive">报告存档</div>
+      <div class="tab" data-view="tickets">工单</div>
+      <div class="spacer"></div>
+      <div class="save-state" id="saveState">正在载入…</div>
+    </div>
+    <div class="params" id="paramsPanel">
+      <label>日期 <b id="dateText">—</b>
+        <button class="mini" id="reopenEntry" title="回到桌面端重新选择日期与小时">重新选择</button>
+      </label>
+      <div class="hours" id="hoursStrip"></div>
+      <div class="quick">
+        <button class="mini" data-quick="all">全选</button>
+        <button class="mini" data-quick="now">0点-当前</button>
+        <button class="mini" data-quick="clear">清空</button>
+        <button class="mini" data-quick="ng">仅NG时段</button>
+      </div>
+      <label>项目 <input type="text" id="projectName" maxlength="40"></label>
+      <label>目的地 <input type="text" id="destination" maxlength="20"></label>
+      <label>线体 <input type="text" id="lineName" maxlength="20"></label>
+      <label>编制 <input type="text" id="reviewer" maxlength="20"></label>
+      <label><input type="checkbox" id="showPhysical"> 显示实物图片列</label>
+      <div class="spacer"></div>
+      <button id="saveDraft">保存草稿</button>
+      <button class="primary" id="generate">生成报告</button>
+    </div>
+  </header>
+
+  <main class="workbench" id="workbench">
+    <aside class="stations" id="stationList"></aside>
+    <section class="images">
+      <div class="cam-head" id="camHead">
+        <h2>选择左侧工站</h2>
+        <span class="meta">勾选小时并选择相机后，这里显示 NG 图片</span>
+      </div>
+      <div class="cards" id="cardGrid"></div>
+    </section>
+    <aside class="reason">
+      <h3>原因分析及改造解决方案</h3>
+      <div class="hint" id="reasonHint">（自动预填事实摘要，可直接改写为对外结论）</div>
+      <textarea id="reasonText" placeholder="选择相机后加载…"></textarea>
+      <div class="row">
+        <button class="mini" id="restoreAuto">恢复自动摘要</button>
+        <button class="mini primary" id="saveReason">保存到草稿</button>
+      </div>
+      <h3>其他NG数量（工站）</h3>
+      <div class="row">
+        <input type="number" id="otherNg" min="0" style="width:96px">
+        <span class="hint" id="otherNgHint"></span>
+      </div>
+      <h3>关联工单</h3>
+      <div class="hint" id="ticketHint">改善措施会追加到本工站原因文本</div>
+      <div id="ticketPick" class="ticket-pick"></div>
+      <div class="row"><button class="mini" id="newTicket">+ 新建工单</button></div>
+    </aside>
+  </main>
+
+  <main class="archive hidden" id="archiveView">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>报告存档</h2>
+        <span class="hint" id="storageStats"></span>
+        <span class="spacer"></span>
+        <button class="mini" id="refreshReports">刷新</button>
+      </div>
+      <table class="grid" id="reportTable">
+        <thead>
+          <tr>
+            <th style="width:60px">编号</th><th style="width:110px">日期</th>
+            <th>时段</th><th style="width:90px">工站</th>
+            <th style="width:110px">生产数 / NG</th><th style="width:80px">XLSX</th>
+            <th style="width:80px">PDF</th><th style="width:150px">生成时间</th>
+            <th style="width:250px">操作</th>
+          </tr>
+        </thead>
+        <tbody id="reportBody"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <main class="tickets hidden" id="ticketsView">
+    <div class="panel" id="ticketListPanel">
+      <div class="panel-head">
+        <h2>工单</h2>
+        <select id="ticketStatusFilter">
+          <option value="open,in_progress">未闭环</option>
+          <option value="all">全部</option>
+          <option value="open">开启中</option>
+          <option value="in_progress">进行中</option>
+          <option value="done">已完成</option>
+          <option value="closed">已关闭</option>
+        </select>
+        <input type="text" id="ticketSearch" placeholder="搜索标题/编号">
+        <span class="hint" id="ticketCounts"></span>
+        <span class="spacer"></span>
+        <button class="mini primary" id="newTicketTop">新建工单</button>
+      </div>
+      <table class="grid">
+        <thead>
+          <tr><th style="width:60px">编号</th><th>标题</th><th style="width:90px">工站</th>
+          <th style="width:90px">分类</th><th style="width:90px">状态</th>
+          <th style="width:110px">责任人</th><th style="width:110px">更新</th></tr>
+        </thead>
+        <tbody id="ticketBody"></tbody>
+      </table>
+    </div>
+    <div class="panel ticket-detail hidden" id="ticketDetail"></div>
+  </main>
+</div>
+
+<div class="task-panel hidden" id="taskPanel">
+  <div class="head" id="taskHead">
+    <span>后台任务</span><span class="badge" id="taskBadge">0</span>
+    <span class="spacer"></span><span class="hint" id="taskToggle">收起</span>
+  </div>
+  <div class="list" id="taskList"></div>
+</div>
+
+<div class="modal hidden" id="modal">
+  <div class="modal-box" id="modalBox"></div>
+</div>
+
+<script src="/webui/app.js"></script>
+</body>
+</html>

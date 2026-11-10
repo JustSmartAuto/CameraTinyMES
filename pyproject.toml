@@ -10,6 +10,7 @@ dependencies = [
     "pillow>=10",
     "pymysql>=1.1",
     "pywebview>=6.2.1",
+    "reportlab>=4.0",
 ]
 
 [dependency-groups]

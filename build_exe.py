@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
+WEBUI = ROOT / "src" / "cameratinymes" / "webui"
 
 
 def main() -> None:
@@ -24,6 +25,7 @@ def main() -> None:
         "--onefile", "--windowed", "--noconfirm", "--clean",
         "--name", name,
         "--add-data", f"{ASSETS}{';'}assets",
+        "--add-data", f"{WEBUI}{';'}cameratinymes/webui",
         "--collect-all", "matplotlib",
         str(ROOT / "src" / "cameratinymes" / "app.py"),
     ]
