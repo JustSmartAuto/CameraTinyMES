@@ -1003,6 +1003,8 @@ def export_xlsx(
     notes: dict[str, str] | None = None,
     image_cells: set[str] | None = None,
     cells: list[str] | None = None,
+    progress_callback=None,  # callable(done:int, total:int, message:str)
+    cancelled: threading.Event | None = None,
 ) -> Path:
     """按 单元格 生成工作表导出（文件名带时间戳后缀）。
 
@@ -1010,8 +1012,26 @@ def export_xlsx(
     图像单元格：直接嵌入图像（原始图工作表 + A0 的渲染图工作表）。
     额外生成「合表」工作表：将同一时间戳（同一次拍照）下所有单元格的值
     合并到同一行，列名为单元格名，便于观察同一次检测中各数据的相互关系。
+
+    progress_callback: 每个关键步骤完成后回调 progress_callback(done, total, message)。
+    cancelled: 外部传入的 threading.Event，set() 时立即中止并抛出 CancelledError。
     """
+    import threading as _t
     from collections import defaultdict
+
+    class CancelledError(Exception):
+        pass
+
+    def _check() -> None:
+        if cancelled and cancelled.is_set():
+            raise CancelledError()
+
+    def _prog(done: int, total: int, msg: str) -> None:
+        if progress_callback:
+            try:
+                progress_callback(done, total, msg)
+            except Exception:
+                pass
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -1020,10 +1040,13 @@ def export_xlsx(
     notes = notes or {}
     image_cells = set(image_cells or ())
     cell_names = cells if cells is not None else storage.cells(camera)
-    for cell in cell_names:
+    _prog(0, len(cell_names) + 1, "准备导出")
+    for idx, cell in enumerate(cell_names):
+        _check()
+        _prog(idx, len(cell_names) + 1, f"处理单元格 {cell}")
         if cell in image_cells:
             _append_image_sheets(wb, storage, camera, cell, notes.get(cell, ""), bold,
-                                 start, end)
+                                 start, end, _check)
             continue
         rows = storage.query(camera, cell, start, end)
         ws = wb.create_sheet(title=cell[:31])
@@ -1034,7 +1057,9 @@ def export_xlsx(
             ws["G1"] = "注解"
             ws["G1"].font = bold
             ws["G2"] = notes[cell]
-        for ts, value, text, ok, job in rows:
+        for row_idx, (ts, value, text, ok, job) in enumerate(rows, start=1):
+            if row_idx % 500 == 0:
+                _check()
             ws.append([ts, job or "", value, text, "OK" if ok else ("NG" if ok == 0 else "")])
             if ok == 0:
                 for c in ws[ws.max_row]:
@@ -1044,6 +1069,8 @@ def export_xlsx(
 
     # 合表：同一次拍照（同一时间戳）的所有单元格合并到一行
     if cell_names:
+        _check()
+        _prog(len(cell_names), len(cell_names) + 1, "生成合表")
         all_rows = storage.query_all(camera, start, end)
         grouped: dict[str, dict[str, tuple[float | None, str, int | None, str | None]]] = defaultdict(dict)
         ts_jobs: dict[str, str | None] = {}
@@ -1058,7 +1085,10 @@ def export_xlsx(
         ws.append(headers)
         for c in ws[1]:
             c.font = bold
-        for ts in sorted(grouped):
+        all_ts = sorted(grouped)
+        for idx, ts in enumerate(all_ts):
+            if idx % 500 == 0:
+                _check()
             row_vals = grouped[ts]
             row: list = [ts, ts_jobs.get(ts) or ""]
             for cell in cell_names:
@@ -1073,9 +1103,12 @@ def export_xlsx(
             ws.auto_filter.ref = f"A1:{ws.cell(row=1, column=len(cell_names)+2).coordinate}"
             ws.freeze_panes = "C2"
 
+    _check()
+    _prog(len(cell_names) + 1, len(cell_names) + 1, "保存文件")
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{camera}{timestamp_suffix()}.xlsx"
     wb.save(path)
+    _prog(len(cell_names) + 1, len(cell_names) + 1, f"完成 → {path.name}")
     return path
 
 
@@ -1100,7 +1133,7 @@ def _embed_image(ws, row: int, data: bytes, max_width: int = 480) -> bool:
 
 
 def _append_image_sheets(wb, storage: Storage, camera: str, cell: str, note: str,
-                         bold, start, end) -> None:
+                         bold, start, end, check_cancelled=None) -> None:
     """图像单元格：原始图与渲染图各生成一个嵌入式工作表。"""
     from .videocodec import load_images
 
@@ -1120,6 +1153,8 @@ def _append_image_sheets(wb, storage: Storage, camera: str, cell: str, note: str
             ws["D1"].font = bold
             ws["D2"] = note
         for i, (ts, _kind, _mime, width, height, data) in enumerate(items, start=2):
+            if check_cancelled and i % 20 == 0:
+                check_cancelled()
             ws.cell(row=i, column=1, value=ts)
             if not _embed_image(ws, i, data):
                 ws.cell(row=i, column=2, value=f"[图像 {width}×{height}]")

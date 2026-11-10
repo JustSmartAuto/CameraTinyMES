@@ -616,14 +616,54 @@ class MonitorApp:
             )
 
     def export_camera(self, cfg: CameraConfig):
-        try:
-            path = export_xlsx(self.storage, cfg.name, self.data_dir / "xlsx",
-                               notes={c.name: c.note for c in cfg.cells},
-                               image_cells={c.name for c in cfg.cells if c.is_image})
-        except Exception as exc:
-            messagebox.showerror("导出失败", str(exc))
-            return
-        self._log(f"xlsx 已导出: {path}")
+        notes = {c.name: c.note for c in cfg.cells}
+        image_cells = {c.name for c in cfg.cells if c.is_image}
+        self._start_export_async(
+            camera=cfg.name, out_dir=self.data_dir / "xlsx",
+            notes=notes, image_cells=image_cells,
+        )
+
+    def _start_export_async(self, *, camera: str, out_dir: Path,
+                            start=None, end=None, notes=None, image_cells=None,
+                            cells=None) -> None:
+        """后台线程执行 export_xlsx，进度通过 queue 传给 ExportProgressDialog。"""
+        import threading as _t
+        from collections import namedtuple
+
+        Props = namedtuple("Props", ["text", "fg", "bg"])
+        # 复用 theme 颜色
+        C_P = getattr(__import__("cameratinymes.theme", fromlist=["COLORS"]),
+                      "COLORS")
+
+        cancelled = _t.Event()
+        q: queue.Queue = queue.Queue()
+
+        dlg = ExportProgressDialog(self.root, camera, on_cancel=lambda: cancelled.set())
+
+        def worker() -> None:
+            def prog(done: int, total: int, msg: str) -> None:
+                try:
+                    q.put(("progress", done, total, msg))
+                except Exception:
+                    pass
+            try:
+                path = export_xlsx(
+                    self.storage, camera, out_dir,
+                    start=start, end=end, notes=notes,
+                    image_cells=image_cells, cells=cells,
+                    progress_callback=prog, cancelled=cancelled,
+                )
+                q.put(("done", str(path)))
+            except Exception as exc:
+                if cancelled.is_set():
+                    q.put(("cancelled", None))
+                else:
+                    q.put(("error", str(exc)))
+
+        th = _t.Thread(target=worker, name=f"export-xlsx-{camera}", daemon=True)
+        th.start()
+        dlg.attach_queue(q, on_done=lambda p: self._log(f"xlsx 已导出: {p}"))
+        dlg.focus_set()
 
     def _camera_names(self) -> list[str]:
         """合并配置中的相机名与数据库中有数据的相机名。"""
@@ -663,15 +703,11 @@ class MonitorApp:
         cfg = next((c for c in self.cameras if c.name == camera), None)
         notes = {c.name: c.note for c in cfg.cells} if cfg else {}
         image_cells = {c.name for c in cfg.cells if c.is_image} if cfg else set()
-        try:
-            path = export_xlsx(self.storage, camera, self.data_dir / "xlsx",
-                               start=start, end=end, notes=notes,
-                               image_cells=image_cells,
-                               cells=cells if cells else None)
-        except Exception as exc:
-            messagebox.showerror("导出失败", str(exc))
-            return
-        self._log(f"xlsx 已导出: {path}")
+        self._start_export_async(
+            camera=camera, out_dir=self.data_dir / "xlsx",
+            start=start, end=end, notes=notes,
+            image_cells=image_cells, cells=cells if cells else None,
+        )
 
     def open_data_dir(self) -> None:
         import os
@@ -1514,3 +1550,107 @@ class SettingsDialog(_IconToplevel):
 
     def _log_status(self, msg: str) -> None:
         self._status_label.config(text=msg, fg=C["teal"])
+
+
+class ExportProgressDialog(_IconToplevel):
+    """xlsx 导出进度对话框：进度条 + 当前步骤 + 取消按钮。"""
+
+    def __init__(self, parent, camera: str, on_cancel=None):
+        super().__init__(parent)
+        self.title(f"导出 xlsx - {camera}")
+        self.transient(parent)
+        self.configure(bg=C["chrome"])
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._on_cancel_cb = on_cancel
+        self._on_done_cb = None
+        self._closed = False
+
+        theme.title_tab(self, f"导出 xlsx - {camera}")
+
+        body = tk.Frame(self, bg=C["chrome"])
+        body.pack(fill="x", padx=12, pady=10)
+
+        self._msg = tk.Label(body, text="准备中…", bg=C["chrome"], fg=C["ink"],
+                             font=theme.FONT, anchor="w", justify="left")
+        self._msg.pack(fill="x", pady=(0, 6))
+
+        self._bar = ttk.Progressbar(body, orient="horizontal", mode="determinate",
+                                   length=360, maximum=100)
+        self._bar.pack(fill="x")
+
+        btns = tk.Frame(self, bg=C["chrome"])
+        btns.pack(pady=8)
+        self._cancel_btn = theme.beos_button(btns, "取消", self._on_close)
+        self._cancel_btn.pack(side="left", padx=4)
+
+        # 尝试 grab_set 但不强求（parent 可能是 MonitorApp 主窗口）
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+
+    def attach_queue(self, q: queue.Queue, on_done=None) -> None:
+        """绑定后台线程的进度队列并启动 UI 轮询。"""
+        self._q = q
+        self._on_done_cb = on_done
+        self._tick()
+
+    def _tick(self) -> None:
+        """每 150ms 从 queue 取一条消息更新 UI。"""
+        if self._closed:
+            return
+        try:
+            while True:
+                item = self._q.get_nowait()
+                kind = item[0]
+                if kind == "progress":
+                    _, done, total, msg = item
+                    pct = int(done / max(total, 1) * 100)
+                    self._bar["value"] = pct
+                    self._msg.config(text=f"{msg}  ({pct}%)")
+                elif kind == "done":
+                    path = item[1]
+                    self._msg.config(text=f"✅ 已完成 → {Path(path).name}", fg=C["teal"])
+                    self._bar["value"] = 100
+                    self._set_close_btn()
+                    if self._on_done_cb:
+                        self._on_done_cb(path)
+                    return  # 结束轮询，不再 tick
+                elif kind == "cancelled":
+                    self._msg.config(text="⏹ 已取消", fg=C["chrome_dark"])
+                    self._set_close_btn()
+                    return
+                elif kind == "error":
+                    self._msg.config(text=f"❌ 失败：{item[1]}", fg=C["red_dot"])
+                    self._set_close_btn()
+                    return
+        except queue.Empty:
+            pass
+        self.after(150, self._tick)
+
+    def _set_close_btn(self) -> None:
+        """完成/取消/失败后把「取消」按钮换成「关闭」。"""
+        self._cancel_btn.config(text="关闭", command=self._destroy)
+
+    def _on_close(self) -> None:
+        """用户点取消（运行中）或关闭按钮（已结束）。"""
+        # 若是运行中：回调外部 cancelled.set()，然后关窗
+        if self._on_cancel_cb and self._cancel_btn.cget("text") == "取消":
+            self._on_cancel_cb()
+            self._on_cancel_cb = None
+            self._msg.config(text="正在取消…", fg=C["chrome_dark"])
+            # 等后台线程发 cancelled/done 消息后再自动关窗
+            # 如果用户再次按关闭则强制关
+            return
+        self._destroy()
+
+    def _destroy(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
