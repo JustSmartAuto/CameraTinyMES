@@ -753,6 +753,9 @@ class MonitorApp:
         save_config(self.data_dir, self.cameras)
         save_settings(self.data_dir, self.settings)
         self._tray.stop()
+        from cameratinymes import renderer
+
+        renderer.shutdown()  # 关闭 WebView 渲染子进程
         self.root.destroy()
 
     # ---------- 设置 ----------

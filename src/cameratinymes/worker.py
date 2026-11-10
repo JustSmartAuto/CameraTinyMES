@@ -14,7 +14,8 @@ from datetime import datetime
 from .cogsocket import CogSocketClient, CogSocketError, parse_cells
 from .config import CameraConfig, CellConfig
 from .images import (cell_is_image, compose_render, fetch_image, fetch_json,
-                     image_source_size, resolve_sources, scaled_url, to_jpeg)
+                     fetch_text, image_source_size, resolve_sources, scaled_url,
+                     to_jpeg, view_size)
 from .storage import StorageBase
 
 log = logging.getLogger(__name__)
@@ -265,43 +266,48 @@ class CameraWorker:
         try:
             sources = resolve_sources(hmi_result, cell.name)
             size = image_source_size(hmi_result)
+            viewport = view_size(hmi_result)
         except Exception as exc:
             log.warning("resolve image for %s failed: %s", cell.name, exc)
             return
         if not sources:
             log.debug("no image source for %s", cell.name)
             return
-        task = asyncio.ensure_future(self._download_images(ts, cell, sources, size))
+        task = asyncio.ensure_future(
+            self._download_images(ts, cell, sources, size, viewport))
         self._image_tasks.append(task)
         task.add_done_callback(lambda t: self._image_tasks.remove(t)
                                if t in self._image_tasks else None)
 
     async def _download_images(self, ts: datetime, cell: CellConfig,
-                               sources: dict[str, str], src_size) -> None:
+                               sources: dict[str, str], src_size,
+                               viewport=None) -> None:
         host, port = self.client.host, self.client.port
         raw_url = sources.get("image")
         if not raw_url:
             return
         src_w, src_h = src_size if src_size else (None, None)
-        gfx_url = sources.get("graphics")
         # 图像与图形并行下载：视图记录（view id）会被相机快速轮换，串行下载时图形常已过期
-        fetches = [asyncio.to_thread(fetch_image, host, port,
-                                     scaled_url(raw_url, src_w, src_h))]
-        if gfx_url:
-            fetches.append(asyncio.to_thread(fetch_json, host, port, gfx_url))
-        results = await asyncio.gather(*fetches, return_exceptions=True)
-
-        data = results[0]
-        if isinstance(data, Exception):
-            log.warning("download image for %s failed: %s", cell.name, data)
-            return
-        graphics = None
-        if gfx_url:
-            graphics = results[1]
-            if isinstance(graphics, Exception):
-                log.warning("download graphics for %s failed: %s", cell.name, graphics)
-                graphics = None
-        data = data[0]  # fetch_image 返回 (bytes, mime)
+        specs = [("image", fetch_image, scaled_url(raw_url, src_w, src_h))]
+        if sources.get("graphics"):
+            specs.append(("graphics", fetch_json, sources["graphics"]))
+        if sources.get("svg"):
+            specs.append(("svg", fetch_text, sources["svg"]))
+        results = await asyncio.gather(
+            *(asyncio.to_thread(fn, host, port, url) for _, fn, url in specs),
+            return_exceptions=True)
+        got: dict[str, object] = {}
+        for (kind, _, _), result in zip(specs, results):
+            if isinstance(result, Exception):
+                if kind == "image":
+                    log.warning("download image for %s failed: %s", cell.name, result)
+                    return
+                log.warning("download %s for %s failed: %s", kind, cell.name, result)
+                continue
+            got[kind] = result
+        data = got["image"][0]  # fetch_image 返回 (bytes, mime)
+        graphics = got.get("graphics")
+        svg_text = got.get("svg")
 
         try:
             raw_jpeg, width, height = await asyncio.to_thread(to_jpeg, data)
@@ -317,10 +323,10 @@ class CameraWorker:
             return
 
         render_ok = False
-        if graphics:
+        if graphics or svg_text:
             try:
                 render_jpeg, width, height = await asyncio.to_thread(
-                    compose_render, data, graphics, src_w)
+                    compose_render, data, graphics, viewport, src_size, svg_text)
                 if self.writer is None or not self.writer.add_frame(
                         ts, self.cfg.name, cell.name, "render", render_jpeg, width, height,
                         job=self.job):

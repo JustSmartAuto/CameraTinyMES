@@ -4,13 +4,15 @@
 1. 单元格自身结果（HmiResult.cells 中对应条目）的 data：字符串 URL 或 data:base64；
 2. 主采集视图 acqImageView.layers 中的 ImageLayer.url。
 
-A0 的渲染图：取 acqImageView 中 GraphicsLayer 的 JSON，把检测图形按原图坐标
-按比例叠加到缩放后的图像上（Pillow 合成），得到「图像 + 图形」的渲染图。
+A0 的渲染图：优先取 acqImageView 的 SVGLayer（相机原生 SVG），否则把
+GraphicsLayer JSON 转成 SVG，再在 WebView2 的 Canvas 里先画底图再画 SVG
+（见 renderer.py），得到「图像 + 图形」的渲染图；WebView 不可用时回退 Pillow。
 
 实现要点（实测于 In-Sight 固件 22.x）：
 - 图像接口只返回 BMP，可用 ?sz=宽,高 请求缩放版本（原图 2448×2048 约 14MB）；
-- GraphicsLayer JSON 坐标即原图像素坐标（Region 的 x/y 为左上角）；
-- 文本图形需用中文字体渲染，否则中文显示为方块。
+- 图形坐标属于 acqImageView.viewport 坐标系，与 ImageLayer 的像素尺寸不一定相同，
+  按图像像素宽度换算比例会整体错位；
+- 文本图形需用中文字体渲染，否则中文显示为方块（SVG 由 WebView 挑选字体）。
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import urllib.request
 from io import BytesIO
 
@@ -75,6 +78,18 @@ def _layer_urls(hmi_result: dict, layer_type: str) -> list[str]:
             and isinstance(layer.get("url"), str) and layer["url"]]
 
 
+def view_size(hmi_result: dict) -> tuple[int, int] | None:
+    """主采集视图的 viewport 尺寸（图形坐标所在的坐标系，不等于图像像素尺寸）。"""
+    acq = (hmi_result or {}).get("acqImageView") or {}
+    vp = acq.get("viewport")
+    if not isinstance(vp, dict):
+        return None
+    width, height = vp.get("width"), vp.get("height")
+    if isinstance(width, (int, float)) and isinstance(height, (int, float)):
+        return int(width), int(height)
+    return None
+
+
 def image_source_size(hmi_result: dict) -> tuple[int, int] | None:
     """主采集视图的原始图像尺寸（用于计算 ?sz= 缩放与图形绘制比例）。"""
     acq = (hmi_result or {}).get("acqImageView") or {}
@@ -103,7 +118,11 @@ def _cell_image_url(hmi_result: dict, cell_name: str) -> str | None:
 
 
 def resolve_sources(hmi_result: dict, cell_name: str) -> dict[str, str]:
-    """返回 {kind: url}：image=原始图；graphics=结果渲染图叠加数据（仅 A0）。"""
+    """返回 {kind: url}：image=原始图；svg/graphics=结果图形（仅 A0）。
+
+    svg 为相机生成的 SVG 图层（与 HMI 显示一致，优先使用）；
+    graphics 为图形 JSON 数组（SVG 缺失或下载失败时兜底）。
+    """
     raw = _cell_image_url(hmi_result, cell_name)
     if not raw:
         urls = _layer_urls(hmi_result, "ImageLayer")
@@ -112,6 +131,9 @@ def resolve_sources(hmi_result: dict, cell_name: str) -> dict[str, str]:
     if raw:
         out["image"] = raw
     if is_a0(cell_name):
+        urls = _layer_urls(hmi_result, "SVGLayer")
+        if urls:
+            out["svg"] = urls[0]
         urls = _layer_urls(hmi_result, "GraphicsLayer")
         if urls:
             out["graphics"] = urls[0]
@@ -152,6 +174,12 @@ def fetch_json(host: str, port: int, path: str, timeout: float = 10.0):
     """下载 JSON（用于 GraphicsLayer 图形数据）。"""
     with _open_url(host, port, path, timeout) as resp:
         return json.loads(resp.read())
+
+
+def fetch_text(host: str, port: int, path: str, timeout: float = 10.0) -> str:
+    """下载文本（用于 SVGLayer 的 SVG 内容）。"""
+    with _open_url(host, port, path, timeout) as resp:
+        return resp.read().decode("utf-8", "replace")
 
 
 def to_jpeg(data: bytes, max_width: int = IMAGE_MAX_WIDTH) -> tuple[bytes, int, int]:
@@ -267,18 +295,87 @@ def _draw_graphic(draw, graphic: dict, k: float) -> bool:
     return False
 
 
-def compose_render(data: bytes, graphics: list, src_width: int | None) -> tuple[bytes, int, int]:
-    """把 GraphicsLayer 图形按比例叠加到图像上，返回 JPEG (bytes, 宽, 高)。"""
-    from PIL import Image, ImageDraw
+_SVG_TAG_RE = re.compile(r"<svg\b[^>]*>", re.IGNORECASE)
+_SVG_ATTR_RE = re.compile(r"""([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
 
-    with Image.open(BytesIO(data)) as base:
+
+def _svg_attrs(tag: str) -> list[tuple[str, str]]:
+    return [(m.group(1), m.group(2) if m.group(2) is not None else m.group(3))
+            for m in _SVG_ATTR_RE.finditer(tag)]
+
+
+def _rewrite_svg(svg_text: str, out_w: int, out_h: int,
+                 space: tuple[int, int] | None) -> str | None:
+    """把相机 SVG 的输出尺寸改为 out_w×out_h，并保证存在 viewBox。
+
+    相机 SVG 的坐标空间由其 viewBox（其次 width/height 属性）声明；
+    两者都没有时按 viewport/image 尺寸兜底。同时移除内嵌的底图 <image>，
+    避免与 canvas 先画好的图像重复叠加。
+    """
+    match = _SVG_TAG_RE.search(svg_text or "")
+    if not match:
+        return None
+    tag = match.group(0)
+    pairs = _svg_attrs(tag)
+    attrs = {k.lower(): v for k, v in pairs}
+    view_box = attrs.get("viewbox")
+    if not view_box:
+        try:
+            cw = float(attrs["width"].removesuffix("px"))
+            ch = float(attrs["height"].removesuffix("px"))
+        except (KeyError, ValueError):
+            cw, ch = space or (out_w, out_h)
+        view_box = f"0 0 {cw:g} {ch:g}"
+    others = "".join(f' {k}="{v}"' for k, v in pairs
+                     if k.lower() not in ("width", "height", "viewbox"))
+    if "xmlns" not in attrs:
+        others = ' xmlns="http://www.w3.org/2000/svg"' + others
+    new_tag = f'<svg{others} width="{out_w}" height="{out_h}" viewBox="{view_box}">'
+    body = svg_text[match.end():]
+    body = re.sub(r"<image\b[^>]*?/>", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"<image\b[^>]*>.*?</image>", "", body,
+                  flags=re.IGNORECASE | re.DOTALL)
+    return new_tag + body
+
+
+def compose_render(data: bytes, graphics: list | None = None,
+                   view_size: tuple[int, int] | None = None,
+                   image_size: tuple[int, int] | None = None,
+                   svg_text: str | None = None) -> tuple[bytes, int, int]:
+    """把检测图形叠加到图像上，返回 JPEG (bytes, 宽, 高)。
+
+    优先用 WebView2（Canvas）合成：图形转 SVG 后与底图一起按输出像素绘制，
+    与相机 HMI 的渲染路径一致，可避免字号、锚点、旋转等逐类型手绘的错位；
+    WebView 不可用时回退 Pillow（坐标按 viewport 缩放）。
+    """
+    from PIL import Image, ImageDraw
+    from . import renderer
+
+    jpeg, width, height = to_jpeg(data)
+    space = None
+    svg = None
+    if svg_text:
+        svg = _rewrite_svg(svg_text, width, height, view_size or image_size)
+    if not svg and graphics:
+        space = renderer.pick_view_size(graphics, view_size, image_size)
+        if space:
+            svg = renderer.graphics_to_svg(graphics, space[0], space[1], width, height)
+    if svg:
+        rendered = renderer.get_renderer().render(jpeg, svg, width, height, JPEG_QUALITY)
+        if rendered:
+            return rendered, width, height
+        log.info("WebView 渲染不可用，回退 Pillow 合成：%s×%s", width, height)
+    if not graphics:
+        return jpeg, width, height
+
+    with Image.open(BytesIO(jpeg)) as base:
         image = base.convert("RGB")
-    if not src_width:
-        src_width = image.width
-    k = image.width / src_width
+    if not space:
+        space = (float(image.width), float(image.height))
+    k = image.width / space[0] if space[0] else 1.0
     draw = ImageDraw.Draw(image)
     unsupported = set()
-    for graphic in graphics or []:
+    for graphic in graphics:
         if not _draw_graphic(draw, graphic, k) and isinstance(graphic, dict):
             unsupported.add(graphic.get("$type"))
     if unsupported:

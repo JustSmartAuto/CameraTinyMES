@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 from cameratinymes.config import (
@@ -27,6 +28,13 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def main(argv=None) -> None:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    # 单文件 exe 打包后，渲染子进程用同一 exe 带此标志重启
+    if "--renderer-host" in argv:
+        from cameratinymes.renderer import host_main
+
+        host_main()
+        return
     args = parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

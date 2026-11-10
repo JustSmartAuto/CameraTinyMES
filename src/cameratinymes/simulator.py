@@ -148,6 +148,7 @@ class SimulatedCamera:
                 "$type": "ViewRecord",
                 "id": self._seq,
                 "url": f"/cam0/app/views/{self._seq}",
+                "viewport": {"width": 640, "height": 480},
                 "layers": [
                     {"$type": "ImageLayer", "url": img_url, "width": 640, "height": 480,
                      "image": {"$type": "Image", "url": img_url, "width": 640, "height": 480}},
