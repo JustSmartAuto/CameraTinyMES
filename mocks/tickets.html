@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>工单管理 — Mock</title>
+<link rel="stylesheet" href="mock.css" />
+<style>
+  .page-head { display: flex; align-items: flex-end; gap: 12px; margin-bottom: 14px; }
+  .page-head h1 { font-size: 20px; margin: 0; letter-spacing: .4px; }
+  .page-head .hint { color: var(--muted); font-size: 12px; }
+  .head-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+  .stat-row2 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .stat-card {
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; box-shadow: var(--shadow);
+  }
+  .stat-card .k { font-size: 11px; color: var(--muted); font-weight: 700; }
+  .stat-card .v { font-size: 20px; font-weight: 700; margin-top: 2px; }
+  .stat-card .v small { font-size: 11px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+
+  .filter-bar {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 8px 10px; margin-bottom: 12px;
+  }
+  .status-tabs { display: flex; gap: 2px; flex-wrap: wrap; }
+  .status-tab {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px; border-radius: 7px; cursor: pointer;
+    font-size: 12.5px; font-weight: 600; color: var(--muted); user-select: none;
+  }
+  .status-tab:hover { background: var(--gray-soft); }
+  .status-tab.on { background: var(--green-soft); color: var(--green-dark); }
+  .status-tab .n {
+    font-size: 10.5px; padding: 0 6px; border-radius: 999px;
+    background: #fff; border: 1px solid var(--line); color: var(--muted); font-weight: 700;
+  }
+  .status-tab.on .n { border-color: #bfe9d1; color: var(--green-dark); }
+
+  .filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-left: auto; }
+  .filters .select { width: auto; padding: 5px 8px; font-size: 12px; }
+  .search { position: relative; }
+  .search .ico {
+    position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); font-size: 12px; pointer-events: none;
+  }
+  .search .input { width: 200px; padding: 6px 9px 6px 24px; font-size: 12px; }
+
+  .issue-list { overflow: hidden; }
+  .issue {
+    display: flex; gap: 12px; padding: 11px 14px;
+    border-bottom: 1px solid var(--line-soft); cursor: pointer;
+  }
+  .issue:last-child { border-bottom: none; }
+  .issue:hover { background: #fbfcfd; }
+  .issue-ico {
+    flex: none; width: 24px; height: 24px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 11px; font-weight: 700; margin-top: 1px;
+  }
+  .issue-ico.open { background: var(--green-soft); color: var(--green-dark); }
+  .issue-ico.in_progress { background: var(--blue-soft); color: var(--blue); }
+  .issue-ico.done { background: var(--gray-soft); color: #5b6672; }
+  .issue-ico.closed { background: #e4e8eb; color: #7b868f; }
+  .issue-main { min-width: 0; flex: 1; }
+  .issue-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; font-weight: 700; }
+  .issue-title .id { color: var(--muted); font-weight: 600; }
+  .issue-title .recur { font-size: 10.5px; font-weight: 700; color: var(--amber); background: var(--amber-soft); border: 1px solid #f0d998; border-radius: 999px; padding: 0 7px; }
+  .issue-meta {
+    display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+    color: var(--muted); font-size: 11.5px; margin-top: 4px;
+  }
+  .issue-meta .sep { color: #c3ccd4; }
+  .issue-right { flex: none; text-align: right; color: var(--muted); font-size: 11.5px; }
+  .issue-right b { color: var(--ink); }
+  .issue-right .reports { margin-top: 3px; }
+
+  /* 抽屉 */
+  .drawer-overlay { display: flex; justify-content: flex-end; padding: 0; }
+  .drawer {
+    width: min(920px, 96vw); height: 100%; background: #fff;
+    display: flex; flex-direction: column;
+    box-shadow: -24px 0 60px rgba(0, 0, 0, .22);
+    animation: drawerIn .2s ease;
+  }
+  .drawer.narrow { width: min(640px, 96vw); }
+  @keyframes drawerIn { from { transform: translateX(40px); opacity: .4; } to { transform: none; opacity: 1; } }
+  .drawer-head { display: flex; gap: 12px; align-items: flex-start; padding: 13px 18px; border-bottom: 1px solid var(--line); }
+  .drawer-head .kicker { font-size: 11.5px; color: var(--muted); }
+  .title-input {
+    font-size: 15px; font-weight: 700; padding: 4px 8px; margin-top: 2px;
+    border-color: transparent; background: #f7f9fa;
+  }
+  .title-input:hover { border-color: var(--line); }
+  .drawer-body { flex: 1; overflow: auto; padding: 14px 18px 20px; }
+  .drawer-foot {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 11px 18px; border-top: 1px solid var(--line); background: #fbfcfd;
+  }
+  .drawer-foot .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .drawer-foot .hint { margin-left: auto; color: var(--muted); font-size: 11.5px; }
+
+  .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 244px; gap: 18px; align-items: start; }
+  .detail-side { background: #f8fafb; border: 1px solid var(--line-soft); border-radius: 9px; padding: 12px; }
+  .detail-side .field { margin-bottom: 10px; }
+  .detail-side .field > label { font-size: 11px; }
+  .detail-side .field > div { font-size: 12px; }
+
+  .section-sub { border: 1px solid var(--line-soft); border-radius: 9px; padding: 12px; margin-top: 14px; }
+  .section-sub .section-title { margin: 0 0 8px; }
+  .timeline { display: flex; flex-direction: column; }
+  .tl-item { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px dashed var(--line-soft); }
+  .tl-item:last-child { border-bottom: none; }
+  .tl-ico {
+    flex: none; width: 20px; height: 20px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 10px; font-weight: 700;
+    background: var(--gray-soft); color: #5b6672;
+  }
+  .tl-ico.created { background: var(--green-soft); color: var(--green-dark); }
+  .tl-ico.status { background: var(--blue-soft); color: var(--blue); }
+  .tl-ico.comment { background: var(--amber-soft); color: var(--amber); }
+  .tl-ico.link { background: #f3e8ff; color: #7e22ce; }
+  .tl-text { font-size: 12.5px; color: var(--ink); }
+  .tl-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .comment-box { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }
+  .comment-box .textarea { min-height: 52px; }
+
+  .link-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .report-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11.5px; font-weight: 600; padding: 3px 9px;
+    border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--teal);
+  }
+  .report-chip.gone { color: var(--muted); border-style: dashed; }
+  #linkPanel { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px; }
+  #linkPanel label { display: flex; gap: 8px; align-items: center; padding: 4px 0; font-size: 12px; }
+
+  .close-opts { display: flex; flex-direction: column; gap: 6px; }
+  .close-opt {
+    display: flex; gap: 9px; align-items: flex-start;
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; cursor: pointer;
+  }
+  .close-opt.on { border-color: #9fdcba; background: var(--green-soft); }
+  .close-opt .t { font-weight: 700; font-size: 12.5px; }
+  .close-opt .d { color: var(--muted); font-size: 11.5px; }
+
+  @media (max-width: 1080px) {
+    .detail-grid { grid-template-columns: 1fr; }
+    .stat-row2 { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand"><span class="logo">C</span>CameraTinyMES<span class="mock-badge">MOCK 原型</span></div>
+  <div class="nav-tabs">
+    <a class="nav-tab" href="report.html">编写报告</a>
+    <a class="nav-tab" href="report.html?archive=1">报告存档</a>
+    <a class="nav-tab active" href="tickets.html">工单</a>
+    <a class="nav-tab" href="index.html">返回入口</a>
+  </div>
+  <div class="topbar-right">
+    <span>操作人：产线工程师</span>
+    <span>数据仅存浏览器本地</span>
+  </div>
+</div>
+
+<div class="page">
+  <div class="page-head">
+    <div>
+      <h1>工单</h1>
+      <div class="hint">改善措施闭环：发现问题 → 派工 → 验证 → 关闭，可回链多份改善报告</div>
+    </div>
+    <div class="head-actions">
+      <button class="btn sm" id="resetBtn" title="清空 localStorage 演示数据">重置演示数据</button>
+      <button class="btn primary" id="newBtn">+ 新建工单</button>
+    </div>
+  </div>
+
+  <div class="stat-row2">
+    <div class="stat-card"><div class="k">未闭环（开启中 + 处理中）</div><div class="v" id="statOpen">0</div></div>
+    <div class="stat-card"><div class="k">已完成待归档</div><div class="v" id="statDone">0</div></div>
+    <div class="stat-card"><div class="k">已关闭</div><div class="v" id="statClosed">0</div></div>
+    <div class="stat-card"><div class="k">P0 / P1 未闭环</div><div class="v" id="statUrgent">0</div></div>
+  </div>
+
+  <div class="panel filter-bar">
+    <div class="status-tabs" id="statusTabs"></div>
+    <div class="filters">
+      <div class="search">
+        <span class="ico">⌕</span>
+        <input id="searchInput" class="input" placeholder="搜索标题 / 正文 / 措施 / 编号" />
+      </div>
+      <select id="fStation" class="select"><option value="">全部工站</option></select>
+      <select id="fCategory" class="select">
+        <option value="">全部类别</option>
+        <option value="misjudge">误判优化</option>
+        <option value="product">产品自身NG</option>
+        <option value="external">外部原因</option>
+        <option value="other">其他</option>
+      </select>
+      <select id="fAssignee" class="select"><option value="">全部责任人</option></select>
+      <select id="fPriority" class="select">
+        <option value="">全部优先级</option>
+        <option value="P0">P0</option>
+        <option value="P1">P1</option>
+        <option value="P2">P2</option>
+        <option value="P3">P3</option>
+      </select>
+      <select id="fSort" class="select">
+        <option value="updated">按更新时间</option>
+        <option value="priority">按优先级</option>
+        <option value="created">按创建时间</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="panel issue-list" id="issueList"></div>
+</div>
+
+<!-- 工单抽屉（新建 / 详情共用） -->
+<div id="drawerOverlay" class="overlay drawer-overlay hidden">
+  <div id="drawer" class="drawer"></div>
+</div>
+
+<!-- 关闭工单：选择关闭原因 -->
+<div id="closeOverlay" class="overlay hidden">
+  <div class="dialog" style="max-width:440px">
+    <div class="dialog-head"><h3 id="closeTitle">关闭工单</h3></div>
+    <div class="dialog-body">
+      <div class="hint" style="color:var(--muted);font-size:12px;margin-bottom:10px">
+        关闭必须选择原因，写入时间线与报告「工单跟踪」Sheet。
+      </div>
+      <div class="close-opts" id="closeOpts"></div>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn" id="closeCancel">取消</button>
+      <button class="btn danger" id="closeConfirm">确认关闭</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="mock-data.js"></script>
+<script src="tickets.js"></script>
+</body>
+</html>

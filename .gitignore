@@ -9,6 +9,9 @@ uv.lock
 
 kimi*.md
 
+# 工具生成的 HTML 分享包（构建产物，不入库）
+.trae-html-share-packages/
+
 # 对标项目参考文件（二进制，不入库）
 reference/mes-local-pilot.db
 reference/mes-mysql-script.zip

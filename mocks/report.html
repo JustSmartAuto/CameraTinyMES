@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>改善分析报告工作台 — Mock</title>
+<link rel="stylesheet" href="mock.css" />
+<style>
+  .param-bar { padding: 12px 14px; margin-bottom: 14px; }
+  .param-row { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  .param-block { display: flex; flex-direction: column; gap: 6px; }
+  .param-block > label { font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .3px; }
+  .date-line { display: flex; align-items: center; gap: 8px; }
+  .date-big { font-size: 15px; font-weight: 700; letter-spacing: .4px; }
+  .hours { display: flex; flex-wrap: wrap; gap: 4px; max-width: 780px; }
+  .hour-chip {
+    width: 36px; height: 26px; border-radius: 6px; border: 1px solid var(--line);
+    background: #fff; color: var(--muted); font-size: 11px; font-weight: 600;
+    display: grid; place-items: center; cursor: pointer; user-select: none;
+  }
+  .hour-chip.on { background: var(--green-soft); border-color: #9fdcba; color: var(--green-dark); }
+  .hour-chip.disabled { opacity: .32; cursor: not-allowed; background: #f6f7f8; }
+  .quick-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .param-meta { margin-left: auto; text-align: right; color: var(--muted); font-size: 12px; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+  .save-state { font-size: 12px; }
+  .save-state b { color: var(--green-dark); }
+  .save-state.warn b { color: var(--red); }
+
+  .workbench {
+    display: grid;
+    grid-template-columns: 218px minmax(0, 1fr) 372px;
+    gap: 14px;
+    align-items: start;
+  }
+  .col-panel { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .col-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; border-bottom: 1px solid var(--line-soft);
+    font-weight: 700; font-size: 12.5px;
+  }
+  .col-head .hint { font-weight: 400; color: var(--muted); font-size: 11.5px; }
+  .col-head .spacer { margin-left: auto; }
+
+  /* 左栏 */
+  .station-list { padding: 8px; max-height: calc(100vh - 300px); overflow: auto; }
+  .st-group { margin-bottom: 6px; }
+  .st-group-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px; font-size: 11.5px; color: var(--muted); font-weight: 700;
+    border-radius: 6px;
+  }
+  .st-group-head .count { margin-left: auto; font-weight: 600; }
+  .st-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 9px; border-radius: 7px; cursor: pointer; border: 1px solid transparent;
+  }
+  .st-item:hover { background: #f7f9fa; }
+  .st-item.active { background: var(--green-soft); border-color: #b8e4cc; }
+  .st-item .cam { font-weight: 700; font-size: 12.5px; }
+  .st-item .sub { margin-left: auto; font-size: 11px; color: var(--muted); }
+  .st-item .dot { flex: none; }
+  .st-item .dot.done { background: var(--green); }
+
+  /* 中栏 */
+  .station-body { padding: 12px; }
+  .stat-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .stat {
+    flex: 1; min-width: 92px; background: #f8fafb; border: 1px solid var(--line-soft);
+    border-radius: 8px; padding: 8px 10px;
+  }
+  .stat .k { font-size: 10.5px; color: var(--muted); font-weight: 700; }
+  .stat .v { font-size: 17px; font-weight: 700; margin-top: 1px; }
+  .stat .v small { font-size: 10.5px; font-weight: 600; color: var(--muted); margin-left: 3px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 10px; }
+  .card {
+    border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: #fff;
+    display: flex; flex-direction: column;
+  }
+  .card-img { position: relative; cursor: zoom-in; background: #111; aspect-ratio: 4 / 3; }
+  .card-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card-img .corner {
+    position: absolute; top: 6px; left: 6px; width: 10px; height: 10px;
+    border-radius: 50%; background: rgba(255,255,255,.25); border: 1.5px solid rgba(255,255,255,.85);
+  }
+  .card-img .corner.misjudge { background: #9aa4ae; border-color: #fff; }
+  .card-img .corner.product { background: #e0453c; border-color: #fff; }
+  .card-img .corner.external { background: #3b6ef5; border-color: #fff; }
+  .card-img .annot { position: absolute; top: 5px; right: 6px; font-size: 10px; color: #fff; background: rgba(0,0,0,.5); padding: 1px 6px; border-radius: 999px; }
+  .card-meta { padding: 6px 8px; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+  .card-meta .t { font-family: Consolas, monospace; color: var(--ink); font-weight: 600; }
+  .card-tags { display: flex; gap: 4px; padding: 0 8px 8px; flex-wrap: wrap; }
+  .card-tags .chip { padding: 2px 7px; font-size: 10.5px; }
+  .card-foot { display: flex; gap: 6px; padding: 0 8px 8px; }
+  .card-foot .btn { flex: 1; justify-content: center; padding: 3px 6px; font-size: 11px; }
+  .cards-note { color: var(--muted); font-size: 11.5px; margin: 8px 2px 0; }
+
+  /* 右栏 */
+  .side-body { padding: 12px; }
+  .side-body .field:last-child { margin-bottom: 0; }
+  .fact {
+    background: #f8fafb; border: 1px dashed #cbd4dc; border-radius: 8px;
+    padding: 9px 10px; color: #4a5560; font-size: 11.5px; line-height: 1.6; white-space: pre-wrap;
+    max-height: 150px; overflow: auto;
+  }
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .ticket-pick { display: flex; flex-direction: column; gap: 6px; }
+  .ticket-pick label {
+    display: flex; gap: 8px; align-items: flex-start; padding: 7px 8px;
+    border: 1px solid var(--line-soft); border-radius: 7px; cursor: pointer; font-size: 12px;
+  }
+  .ticket-pick label:hover { background: #fafbfc; }
+  .ticket-pick input { margin-top: 2px; }
+  .ticket-pick .tp-title { font-weight: 600; }
+  .ticket-pick .tp-meta { color: var(--muted); font-size: 11px; margin-top: 1px; }
+
+  /* 生成进度 */
+  .stage-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  .stage { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .stage .ico { width: 16px; text-align: center; }
+  .stage.active { color: var(--ink); font-weight: 700; }
+  .stage.done { color: var(--green-dark); }
+  .result-box { background: #f7fbf9; border: 1px solid #c7e9d8; border-radius: 9px; padding: 12px; }
+  .result-box .line { display: flex; gap: 8px; font-size: 12px; margin-bottom: 6px; }
+  .result-box .line span:first-child { color: var(--muted); width: 76px; flex: none; }
+
+  /* 标注 */
+  .annot-stage { position: relative; background: #111; border-radius: 8px; overflow: hidden; line-height: 0; }
+  .annot-stage img, .annot-stage canvas { display: block; width: 100%; height: auto; }
+  .annot-stage canvas { position: absolute; inset: 0; cursor: crosshair; }
+  .annot-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .box-list { font-size: 11.5px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; max-height: 96px; overflow: auto; }
+  .box-list .bx { display: flex; gap: 8px; align-items: center; }
+
+  @media (max-width: 1240px) {
+    .workbench { grid-template-columns: 190px minmax(0, 1fr); }
+    .workbench .col-side { grid-column: 1 / -1; }
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand"><span class="logo">C</span>CameraTinyMES<span class="mock-badge">MOCK 原型</span></div>
+  <div class="nav-tabs">
+    <a class="nav-tab active" id="writeTab" href="report.html">编写报告</a>
+    <a class="nav-tab" id="archiveTab" href="report.html?archive=1">报告存档</a>
+    <a class="nav-tab" href="tickets.html">工单</a>
+    <a class="nav-tab" href="index.html">返回入口</a>
+  </div>
+  <div class="topbar-right">
+    <span id="reviewerLabel">操作人：产线工程师</span>
+    <span>数据仅存浏览器本地</span>
+  </div>
+</div>
+
+<div class="page">
+  <!-- 入口：模拟桌面端「日期 + 小时」对话框 -->
+  <div id="entryOverlay" class="overlay hidden">
+    <div class="dialog">
+      <div class="dialog-head">
+        <h3>生成改善分析报告</h3>
+        <span class="mock-badge">模拟桌面端入口对话框</span>
+      </div>
+      <div class="dialog-body">
+        <div class="field">
+          <label>统计日期（默认当日，仅列出已生产日期）</label>
+          <select id="entryDate" class="select"></select>
+        </div>
+        <div class="field">
+          <label>统计时段（默认 0 点 ~ 当前小时；历史日期默认全选）</label>
+          <div id="entryHours" class="hours"></div>
+          <div class="quick-row" style="margin-top:8px">
+            <button class="btn sm" data-quick="all">全选</button>
+            <button class="btn sm" data-quick="upto">0点-当前小时</button>
+            <button class="btn sm" data-quick="clear">清空</button>
+            <button class="btn sm" data-quick="ng">仅NG时段</button>
+            <span id="entryHint" class="hint" style="color:var(--muted);font-size:11.5px"></span>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" id="entryCancel">取消</button>
+        <button class="btn primary" id="entryConfirm">打开工作台</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 主应用 -->
+  <div id="app" hidden>
+    <div class="panel param-bar">
+      <div class="param-row">
+        <div class="param-block">
+          <label>统计日期</label>
+          <div class="date-line">
+            <span id="dateView" class="date-big">2026-11-10</span>
+            <button class="btn sm" id="changeDateBtn">重新选择</button>
+          </div>
+        </div>
+        <div class="param-block" style="flex:1;min-width:420px">
+          <label>统计小时（未来小时不可选）</label>
+          <div id="mainHours" class="hours"></div>
+          <div class="quick-row" style="margin-top:6px">
+            <button class="btn sm" data-quick="all">全选</button>
+            <button class="btn sm" data-quick="upto">0点-当前</button>
+            <button class="btn sm" data-quick="clear">清空</button>
+            <button class="btn sm" data-quick="ng">仅NG时段</button>
+            <span id="hoursSummary" style="color:var(--muted);font-size:11.5px"></span>
+          </div>
+        </div>
+        <div class="param-meta">
+          <div class="save-state" id="saveState">尚未保存草稿</div>
+          <div class="quick-row">
+            <button class="btn sm" id="speedBtn" title="演示用：加速自动保存倒计时">加速演示 1×</button>
+            <button class="btn sm" id="saveDraftBtn">保存草稿</button>
+            <button class="btn primary" id="generateBtn">生成报告</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="workbench">
+      <!-- 左：工站 -->
+      <div class="col-panel">
+        <div class="col-head">工站 / 相机<span class="spacer"></span><span class="hint" id="camCount"></span></div>
+        <div class="station-list" id="stationList"></div>
+      </div>
+
+      <!-- 中：NG 图片 -->
+      <div class="col-panel">
+        <div class="col-head">
+          <span id="curStation">OP10</span>
+          <span class="hint" id="curCamera">OP10-28</span>
+          <span class="spacer"></span>
+          <span class="hint" id="cardHint"></span>
+        </div>
+        <div class="station-body">
+          <div class="stat-row" id="statRow"></div>
+          <div class="cards" id="cards"></div>
+          <div class="cards-note" id="cardsNote"></div>
+        </div>
+      </div>
+
+      <!-- 右：原因分析 -->
+      <div class="col-panel col-side">
+        <div class="col-head">原因分析及改造解决方案<span class="spacer"></span><span class="hint" id="reasonWho"></span></div>
+        <div class="side-body">
+          <div class="field">
+            <div class="row-between" style="margin-bottom:4px">
+              <label style="margin:0">自动事实摘要（只陈述事实）</label>
+              <button class="btn ghost sm" id="refillFactBtn">重新生成</button>
+            </div>
+            <div class="fact" id="factText"></div>
+          </div>
+          <div class="field">
+            <label>对外原因分析 / 改善措施（可自由改写）</label>
+            <textarea id="reasonInput" class="textarea" rows="7" placeholder="在此撰写给客户看的原因分析与改善措施…"></textarea>
+            <div class="row-between" style="margin-top:5px">
+              <button class="btn ghost sm" id="restoreFactBtn">恢复自动摘要</button>
+              <span class="hint" style="color:var(--muted);font-size:11px" id="reasonCount"></span>
+            </div>
+          </div>
+          <div class="field">
+            <label>其他NG数量（默认由 tag 自动汇总，可人工覆盖）</label>
+            <div class="row-between">
+              <input id="otherNgInput" class="input" type="number" min="0" step="1" style="max-width:110px" />
+              <span class="hint" style="color:var(--muted);font-size:11.5px" id="otherNgHint"></span>
+            </div>
+            <div style="margin-top:4px"><button class="btn ghost sm" id="resetOtherNg">恢复自动值</button></div>
+          </div>
+          <div class="field">
+            <div class="row-between" style="margin-bottom:5px">
+              <label style="margin:0">关联工单（改善措施）</label>
+              <a class="btn ghost sm" id="newTicketLink" href="tickets.html?new=1" target="_blank">+ 新建工单</a>
+            </div>
+            <div class="ticket-pick" id="ticketPick"></div>
+          </div>
+          <div class="field">
+            <label>表头信息</label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+              <input id="hdrProject" class="input" placeholder="项目名称" />
+              <input id="hdrDestination" class="input" placeholder="目的地" />
+              <input id="hdrLine" class="input" placeholder="产线" />
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">
+                <input type="checkbox" id="hdrPhysical" /> 实物图片列
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 报告存档 -->
+  <div id="archiveView" hidden>
+    <div class="panel" style="padding:14px;margin-bottom:14px">
+      <div class="row-between">
+        <div class="section-title" style="margin:0">报告存档<span class="hint">生成后先入库，再落盘 xlsx + pdf</span></div>
+        <div>
+          <a class="btn sm" href="report.html">返回编写</a>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <table class="table">
+        <thead>
+          <tr><th>#</th><th>生成时间</th><th>统计日期</th><th>时段</th><th>产量 / NG</th><th>xlsx</th><th>pdf</th><th>状态</th><th style="width:180px">操作</th></tr>
+        </thead>
+        <tbody id="archiveRows"></tbody>
+      </table>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <div class="col-head">未完成草稿<span class="spacer"></span><span class="hint">自动保存到数据库（Mock 用 localStorage 模拟）</span></div>
+      <div style="padding:10px 12px" id="draftList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 标注弹层 -->
+<div id="annotOverlay" class="overlay hidden">
+  <div class="dialog wide">
+    <div class="dialog-head">
+      <h3>图片标注</h3>
+      <span class="hint" style="color:var(--muted);font-size:11.5px" id="annotMeta"></span>
+      <button class="btn sm close" data-close="annot">关闭</button>
+    </div>
+    <div class="dialog-body">
+      <div class="annot-toolbar">
+        <span style="font-size:12px;color:var(--muted)">框标签</span>
+        <select id="annotLabel" class="select" style="width:130px">
+          <option value="误判">误判</option>
+          <option value="划痕">划痕</option>
+          <option value="气孔">气孔</option>
+          <option value="异物">异物</option>
+        </select>
+        <button class="btn sm" id="annotClear">清空所有框</button>
+        <span style="font-size:11.5px;color:var(--muted)">在图上按住鼠标拖拽即可画框</span>
+      </div>
+      <div class="annot-stage" id="annotStage">
+        <img id="annotImg" alt="" />
+        <canvas id="annotCanvas"></canvas>
+      </div>
+      <div class="field" style="margin-top:10px">
+        <label>误判原因 / 注意点</label>
+        <input id="annotDesc" class="input" placeholder="例如：反光被误判为划痕，注意避免侧光角度" />
+      </div>
+      <div class="box-list" id="boxList"></div>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn" data-close="annot">取消</button>
+      <button class="btn primary" id="annotSave">保存标注</button>
+    </div>
+  </div>
+</div>
+
+<!-- 生成进度 / 结果 -->
+<div id="genOverlay" class="overlay hidden">
+  <div class="dialog">
+    <div class="dialog-head">
+      <h3>生成改善分析报告</h3>
+      <span class="hint" id="genHint" style="color:var(--muted);font-size:11.5px"></span>
+    </div>
+    <div class="dialog-body">
+      <div id="genProgress">
+        <div class="progress-track"><div class="progress-fill" id="genFill"></div></div>
+        <div class="stage-list" id="stageList"></div>
+      </div>
+      <div id="genResult" hidden>
+        <div class="result-box">
+          <div style="font-weight:700;margin-bottom:8px;color:var(--green-dark)">✓ 已保存到数据库，并落盘两份文件</div>
+          <div class="line"><span>存档编号</span><b id="resId"></b></div>
+          <div class="line"><span>xlsx</span><a href="#" id="resXlsx" class="mono"></a></div>
+          <div class="line"><span>pdf</span><a href="#" id="resPdf" class="mono"></a></div>
+          <div class="line"><span>库存记录</span><span id="resDb" style="color:var(--muted)"></span></div>
+        </div>
+        <div class="mock-note" style="margin-top:12px">
+          Mock 不产生真实文件。真实实现中，此步会先写 <code>reports</code>/<code>report_files</code>，再落盘到
+          <code>D:/JustSmart/CameraTinyMES/reports/</code>，随后可打开 xlsx 做发送前检查与修改。
+        </div>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn" id="genClose" hidden>关闭</button>
+      <button class="btn danger" id="genCancel">取消</button>
+      <button class="btn" id="genOpenXlsx" hidden>打开 xlsx</button>
+      <button class="btn primary" id="genArchive" hidden>查看存档</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="mock-data.js"></script>
+<script src="report.js"></script>
+</body>
+</html>
