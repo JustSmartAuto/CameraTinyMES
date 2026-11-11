@@ -30,10 +30,12 @@ try:
 except ImportError:  # 未安装为包时直接使用源码目录
     sys.path.insert(0, str(ROOT / "src"))
 
-from cameratinymes.config import DatabaseConfig, default_data_dir, load_database_config
+from cameratinymes.config import (
+    DatabaseConfig, default_data_dir, load_config, load_database_config, result_specs,
+)
 from cameratinymes.storage import (
     DEFAULT_FAIL_VALUES, DEFAULT_PASS_VALUES, MariaDBStorage, SQLiteStorage,
-    _result_status, open_storage,
+    open_storage,
 )
 
 log = logging.getLogger("okng_hourly")
@@ -43,35 +45,90 @@ DEFAULT_PORT = 18130
 
 # ---------- 数据查询 ----------
 
-def hourly_okng(storage, day: str) -> list[dict]:
+def _as_float(text) -> float | None:
+    try:
+        return float(str(text).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _judge_text(text, passes, fails, pass_nums, fail_nums) -> int | None:
+    """按结果单元格标记判定：1=OK 0=NG None=未判定。
+
+    除精确文本匹配外，增加数值等价兜底（相机输出 1.0 而配置为 1 时仍可判定）。
+    """
+    t = str(text or "").strip().upper()
+    if t in fails:
+        return 0
+    if t in passes:
+        return 1
+    f = _as_float(text)
+    if f is not None:
+        if f in fail_nums:
+            return 0
+        if f in pass_nums:
+            return 1
+    return None
+
+
+def _token_nums(tokens) -> frozenset:
+    return frozenset(f for f in (_as_float(t) for t in tokens) if f is not None)
+
+
+def hourly_okng(storage, day: str, cameras=()) -> list[dict]:
     """某天各相机逐小时的 OK/NG 聚合（只统计可判定的样本）。
 
-    判定推导与主程序报告一致（storage._result_status）：
-    优先 samples.ok 列；未写 ok 时按 text 命中通过/不通过文本（默认 OK/NG）兜底，
-    因此数值、图像等其他单元格不会混入统计。
+    判定规则与主程序一致（config.result_specs）：
+    每台相机优先用配置的结果单元格及其通过/不通过标记；未配置的相机回退
+    全局 OK/NG 文本。samples.ok 列（阈值判定）始终优先。
     """
     start = f"{day}T00:00:00.000"
     end = (datetime.fromisoformat(day) + timedelta(days=1)).isoformat(
         timespec="milliseconds")
-    expr, token_args = _result_status(DEFAULT_PASS_VALUES, DEFAULT_FAIL_VALUES)
+    rules: dict[str, tuple[str | None, tuple, tuple]] = {}
+    for camera, cell, passes, fails in result_specs(cameras):
+        rules[camera.name] = (cell.name, passes, fails)
+    rule_nums = {name: (_token_nums(p), _token_nums(f))
+                 for name, (_c, p, f) in rules.items()}
+
+    # ok 列全表保留；文本行截断到 40 字符，排除文件名等长串（只影响文本判定）
     rows = storage._fetchall(
-        "SELECT camera, hh, v, COUNT(*) FROM ("
-        "  SELECT camera, substr(ts, 12, 2) AS hh, (" + expr + ") AS v"
-        "  FROM samples WHERE ts >= ? AND ts < ?"
-        ") t WHERE v IS NOT NULL GROUP BY camera, hh, v",
-        token_args + (start, end))
-    cameras: dict[str, dict] = {}
-    for camera, hh, v, n in rows:
+        "SELECT camera, cell, ok, text, substr(ts, 12, 2) AS hh, COUNT(*)"
+        " FROM samples WHERE ts >= ? AND ts < ?"
+        " AND (ok IS NOT NULL OR LENGTH(text) <= 40)"
+        " GROUP BY camera, cell, ok, text, hh",
+        (start, end))
+
+    cams: dict[str, dict] = {}
+    for camera, cell, ok, text, hh, n in rows:
         if not str(hh or "").isdigit():
             continue
-        cam = cameras.setdefault(camera, {"camera": camera, "hours": {}})
-        cell = cam["hours"].setdefault(f"{int(str(hh)) :02d}", {"ok": 0, "ng": 0})
-        cell["ok" if int(v) == 1 else "ng"] += int(n)
+        rule = rules.get(camera)
+        if rule and rule[0]:
+            if cell != rule[0]:
+                continue  # 只按该相机配置的结果单元格判定
+            _cell, passes, fails = rule
+            pass_nums, fail_nums = rule_nums[camera]
+        else:
+            passes, fails = DEFAULT_PASS_VALUES, DEFAULT_FAIL_VALUES
+            pass_nums, fail_nums = _token_nums(passes), _token_nums(fails)
+        v = int(ok) if ok is not None else _judge_text(text, passes, fails,
+                                                       pass_nums, fail_nums)
+        if v is None:
+            continue
+        cam = cams.setdefault(camera, {"camera": camera, "hours": {}})
+        bucket = cam["hours"].setdefault(f"{int(str(hh)) :02d}", {"ok": 0, "ng": 0})
+        bucket["ok" if v == 1 else "ng"] += int(n)
+
+    # 相机清单：启用配置的相机（即使无判定也显示空行）+ 库中出现但未配置的相机
+    names = [c.name for c in cameras if getattr(c, "enabled", True)]
+    names += [n for n in sorted(cams) if n not in names]
     result = []
-    for cam in sorted(cameras.values(), key=lambda c: c["camera"]):
+    for name in names:
+        cam = cams.get(name) or {"camera": name, "hours": {}}
         ok = sum(h["ok"] for h in cam["hours"].values())
         ng = sum(h["ng"] for h in cam["hours"].values())
-        result.append({**cam, "total": ok + ng, "ok": ok, "ng": ng})
+        result.append({**cam, "camera": name, "total": ok + ng, "ok": ok, "ng": ng})
     return result
 
 
@@ -431,6 +488,7 @@ tfoot td { background: var(--chrome); font-weight: bold; }
 
 class Handler(BaseHTTPRequestHandler):
     storage = None  # 由 serve() 注入
+    cameras = ()    # 相机配置（含按相机结果单元格与通过/不通过标记）
 
     def log_message(self, fmt, *args):  # 静默默认访问日志
         log.debug("%s %s", self.address_string(), fmt % args)
@@ -465,7 +523,7 @@ class Handler(BaseHTTPRequestHandler):
                     "backend": self.storage.backend,
                     "endpoint": getattr(self.storage, "endpoint",
                                         getattr(self.storage, "path", "")),
-                    "cameras": hourly_okng(self.storage, day),
+                    "cameras": hourly_okng(self.storage, day, self.cameras),
                     "generated_at": datetime.now().strftime("%H:%M:%S"),
                 })
             elif parsed.path == "/api/dates":
@@ -494,7 +552,16 @@ def serve(args) -> int:
           + (f" -> {storage.endpoint}" if isinstance(storage, MariaDBStorage)
              else f" -> {storage.path}" if isinstance(storage, SQLiteStorage) else ""))
 
+    try:
+        cameras = load_config(data_dir)
+    except Exception as exc:
+        print(f"读取相机配置失败（{exc}），将按全局 OK/NG 文本判定", file=sys.stderr)
+        cameras = []
+    print(f"相机配置: {sum(1 for c in cameras if c.enabled)} 台启用"
+          f" / {len(cameras)} 台（来自 config/cameras.json）")
+
     Handler.storage = storage
+    Handler.cameras = cameras
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}/"
     print(f"小时 OK/NG 率看板已启动: {url}  (Ctrl+C 停止)")
