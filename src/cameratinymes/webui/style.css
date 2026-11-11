@@ -442,6 +442,14 @@ table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .gallery-item .ops { display: flex; gap: 6px; padding: 0 6px 6px; }
 .gallery-item .ops button { flex: 1; }
+.gallery-item { position: relative; cursor: pointer; }
+.gallery-item.selected { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue) inset; }
+.gallery-item .pick-badge {
+  position: absolute; top: 4px; left: 4px; min-width: 18px; height: 18px;
+  display: none; align-items: center; justify-content: center; border-radius: 9px;
+  background: var(--blue); color: #fff; font-size: 11px; padding: 0 4px;
+}
+.gallery-item.selected .pick-badge { display: inline-flex; }
 .annot-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 12px; }
 @media (max-width: 860px) { .annot-wrap { grid-template-columns: 1fr; } }
 .canvas-box { position: relative; background: #111; border: 1px solid #777; overflow: hidden; }

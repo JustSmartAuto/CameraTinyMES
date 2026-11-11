@@ -378,7 +378,7 @@ async function selectCamera(camera) {
     state.tags[camera] = Object.assign({}, detail.tags || {});
     if (!(camera in state.reasons)) state.reasons[camera] = detail.reason || '';
     if (!(camera in state.picked)) state.picked[camera] = (detail.picked || []).slice();
-    if (!(camera in state.okPicks)) state.okPicks[camera] = detail.ok_pick || null;
+    if (!(camera in state.okPicks)) state.okPicks[camera] = okPickList(detail.ok_pick);
     if (!(state.ticketSel[detail.station])) state.ticketSel[detail.station] = [];
     renderCamHead();
     renderCards();
@@ -390,13 +390,46 @@ async function selectCamera(camera) {
   }
 }
 
+function okPickList(raw) {
+  if (Array.isArray(raw)) return raw.filter((item) => item && item.ts);
+  if (raw && raw.ts) return [raw];
+  return [];
+}
+
+function cameraOkPicks(camera) {
+  return okPickList(state.okPicks[camera]);
+}
+
+function setOkPicks(camera, picks) {
+  if (picks.length) {
+    state.okPicks[camera] = picks;
+  } else {
+    delete state.okPicks[camera];
+  }
+}
+
+function okPickIndex(camera, ts, kind) {
+  return cameraOkPicks(camera).findIndex(
+    (item) => item.ts === ts && (item.kind || '') === (kind || ''));
+}
+
+function okImagesPayload() {
+  const out = {};
+  Object.keys(state.okPicks).forEach((camera) => {
+    const picks = cameraOkPicks(camera);
+    if (picks.length) out[camera] = picks;
+  });
+  return out;
+}
+
 function renderCamHead() {
   const d = state.detail;
   if (!d) return;
   const tagged = Object.keys(d.tags || {}).length;
-  const pick = state.okPicks[d.camera];
-  const okText = pick
-    ? `${timeText(pick.ts)} · ${pick.kind === 'render' ? '渲染图' : '原图'}`
+  const picks = cameraOkPicks(d.camera);
+  const first = picks[0];
+  const okText = picks.length
+    ? `已选 ${picks.length} 张（首张为参考图：${timeText(first.ts)} · ${first.kind === 'render' ? '渲染图' : '原图'}）`
     : (d.ok ? '自动（OK 记录中位数）' : '无 OK 记录');
   $('#camHead').innerHTML = `
     <h2>${esc(d.camera)}</h2>
@@ -404,11 +437,11 @@ function renderCamHead() {
     <span class="meta">NG ${d.ng_total} · 已标注 ${tagged} · 入报告 ${(state.picked[d.camera] || []).length}/${d.limit}</span>
     <span class="okbar">OK 参考图：<b>${okText}</b>
       <button class="mini" id="okPickBtn">图库选择…</button>
-      ${pick ? '<button class="mini ghost" id="okAutoBtn">恢复自动</button>' : ''}</span>
+      ${picks.length ? '<button class="mini ghost" id="okAutoBtn">恢复自动</button>' : ''}</span>
     <span class="count">点击图片可画框标注；1=误判 2=产品自身NG 3=外部原因 0=清除</span>`;
   $('#okPickBtn').addEventListener('click', openGallery);
   $('#okAutoBtn')?.addEventListener('click', () => {
-    delete state.okPicks[d.camera];
+    setOkPicks(d.camera, []);
     renderCamHead();
     saveDraftSoon();
   });
@@ -701,7 +734,7 @@ function payload() {
   return {
     reasons: state.reasons,
     picked_images: state.picked,
-    ok_images: state.okPicks,
+    ok_images: okImagesPayload(),
     other_ng: state.otherNg,
     tickets: state.ticketSel,
     project_name: $('#projectName').value,
@@ -718,7 +751,11 @@ function applyDraft(draft) {
   const p = draft.payload || {};
   state.reasons = Object.assign({}, p.reasons || {});
   state.picked = Object.assign({}, p.picked_images || {});
-  state.okPicks = Object.assign({}, p.ok_images || {});
+  state.okPicks = {};
+  Object.keys(p.ok_images || {}).forEach((camera) => {
+    const picks = okPickList(p.ok_images[camera]);
+    if (picks.length) state.okPicks[camera] = picks;
+  });
   state.otherNg = Object.assign({}, p.other_ng || {});
   state.ticketSel = {};
   Object.keys(p.tickets || {}).forEach((k) => { state.ticketSel[k] = (p.tickets[k] || []).map(Number); });
@@ -793,7 +830,7 @@ async function generate() {
     reasons: state.reasons,
     other_ng: state.otherNg,
     picked_images: state.picked,
-    ok_images: state.okPicks,
+    ok_images: okImagesPayload(),
     tickets: state.ticketSel,
   };
   try {
@@ -1207,7 +1244,7 @@ function openGallery() {
   openModal(`<div class="head">
       <span>图库 · ${esc(d.camera)}</span>
       <span class="spacer"></span>
-      <span class="hint" style="font-weight:400">选择当天 OK 参考图，支持原图与渲染图</span>
+      <span class="hint" style="font-weight:400">可多选（原图/渲染图），首张为 OK 参考图，其余追加进报告</span>
       <button class="mini" data-close>关闭</button>
     </div>
     <div class="body">
@@ -1220,11 +1257,19 @@ function openGallery() {
           <option value="image">原图</option>
         </select></label>
         <button class="mini" id="gReload">筛选</button>
+        <button class="mini ghost" id="gClear">清空已选</button>
         <span class="hint" id="gHint">载入中…</span>
       </div>
       <div class="gallery" id="gallery"></div>
     </div>`);
   $('#gReload').addEventListener('click', loadGallery);
+  $('#gClear').addEventListener('click', () => {
+    setOkPicks(d.camera, []);
+    markGallerySelection();
+    renderCamHead();
+    saveDraftSoon();
+    toast('已清空 OK 图选择');
+  });
   loadGallery();
 }
 
@@ -1238,19 +1283,23 @@ async function loadGallery() {
   try {
     const data = await api(`/api/gallery?camera=${enc(d.camera)}&date=${state.day}`
       + `&start=${$('#gStart').value}&end=${$('#gEnd').value}`
-      + `&kind=${$('#gKind').value}&limit=120`);
+      + `&kind=${$('#gKind').value}&limit=300`);
     if (!data.items.length) {
+      grid.dataset.total = '';
       hint.textContent = '该时间段没有图片';
       return;
     }
-    hint.textContent = `${data.items.length} 张（${data.start}–${data.end}）`;
+    hint.textContent = `${data.items.length} 张（${data.start}–${data.end}），点图多选`;
+    grid.dataset.total = String(data.items.length);
+    grid.dataset.range = `${data.start}–${data.end}`;
     grid.innerHTML = data.items.map((item) => `
       <figure class="gallery-item" data-ts="${esc(item.ts)}" data-kind="${esc(item.kind)}">
         <img loading="lazy" src="${item.url}" alt="${timeText(item.ts)}">
+        <span class="pick-badge"></span>
         <figcaption><span>${timeText(item.ts)}</span>
           <span>${item.kind === 'render' ? '渲染图' : '原图'}</span></figcaption>
         <div class="ops">
-          <button class="mini primary" data-act="use">设为 OK 图</button>
+          <button class="mini primary" data-act="use">加入报告</button>
           <button class="mini ghost" data-act="annotate">画框标注</button>
         </div>
       </figure>`).join('');
@@ -1258,18 +1307,58 @@ async function loadGallery() {
       const ts = node.dataset.ts;
       const kind = node.dataset.kind;
       node.querySelector('[data-act="use"]').addEventListener('click', () => {
-        state.okPicks[d.camera] = { ts, kind };
+        toggleOkPick(ts, kind);
+        markGallerySelection();
         renderCamHead();
-        closeModal();
         saveDraftSoon();
-        toast(`已选 OK 图：${timeText(ts)}`);
       });
       node.querySelector('[data-act="annotate"]').addEventListener('click', () => {
         openAnnotator(d.camera, ts, kind);
       });
     });
+    markGallerySelection();
   } catch (err) {
     hint.textContent = `载入失败：${err.message}`;
+  }
+}
+
+function toggleOkPick(ts, kind) {
+  const d = state.detail;
+  if (!d) return;
+  const picks = cameraOkPicks(d.camera).slice();
+  const index = okPickIndex(d.camera, ts, kind);
+  if (index >= 0) {
+    picks.splice(index, 1);
+    toast(`已移出：${timeText(ts)}`);
+  } else {
+    const limit = state.cfg.ng_images_per_station || 100;
+    if (picks.length >= limit) { toast(`每台相机最多 ${limit} 张 OK 图`, 3000); return; }
+    picks.push({ ts, kind });
+    toast(`已加入第 ${picks.length} 张：${timeText(ts)}`);
+  }
+  setOkPicks(d.camera, picks);
+}
+
+function markGallerySelection() {
+  const d = state.detail;
+  const grid = $('#gallery');
+  if (!d || !grid) return;
+  const picks = cameraOkPicks(d.camera);
+  grid.querySelectorAll('.gallery-item').forEach((node) => {
+    const index = picks.findIndex(
+      (item) => item.ts === node.dataset.ts && (item.kind || '') === node.dataset.kind);
+    node.classList.toggle('selected', index >= 0);
+    const badge = node.querySelector('.pick-badge');
+    if (badge) badge.textContent = index >= 0 ? String(index + 1) : '';
+    const btn = node.querySelector('[data-act="use"]');
+    if (btn) btn.textContent = index >= 0 ? '移出报告' : '加入报告';
+  });
+  const hint = $('#gHint');
+  const total = grid.dataset.total;
+  if (hint) {
+    hint.textContent = total
+      ? `${total} 张（${grid.dataset.range || ''}）· 已选 ${picks.length} 张`
+      : `已选 ${picks.length} 张`;
   }
 }
 

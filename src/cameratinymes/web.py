@@ -27,7 +27,7 @@ from .config import (AppSettings, CameraConfig, DEFAULT_IMAGE_CELL, ReportConfig
                      image_cell, result_cell, result_specs, result_tokens,
                      save_settings)
 from .okng import hourly_okng
-from .report import (MAX_NG_IMAGES, CameraStat, ReportOptions,
+from .report import (MAX_IMAGE_SLOTS, CameraStat, ReportOptions,
                      auto_pick, auto_reason, collect_stats, hour_ranges, ranges_iso,
                      station_of)
 from .reportstore import (export_report_to_disk, list_reports, load_report_bytes,
@@ -126,6 +126,21 @@ def _parse_hours(values) -> list[int]:
     for value in values or []:
         walk(value)
     return sorted(hours)
+
+
+def _ok_pick_list(value) -> list[dict]:
+    """OK 图选择归一化为列表（兼容旧的单对象写法）。"""
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    picks: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict) or not item.get("ts"):
+            continue
+        kind = item.get("kind") if item.get("kind") in ("image", "render") else ""
+        picks.append({"ts": str(item["ts"]), "kind": kind})
+    return picks
 
 
 def _icon_data_uri() -> str:
@@ -339,12 +354,11 @@ class ReportServer:
         overlay = params.get("overlay_annotations")
         if overlay is None:
             overlay = self.cfg.overlay_annotations
-        ok_images: dict[str, dict] = {}
+        ok_images: dict[str, list[dict]] = {}
         for camera, sel in (params.get("ok_images") or {}).items():
-            if not isinstance(sel, dict) or not sel.get("ts"):
-                continue
-            kind = sel.get("kind") if sel.get("kind") in ("image", "render") else ""
-            ok_images[str(camera)] = {"ts": str(sel["ts"]), "kind": kind}
+            picks = _ok_pick_list(sel)
+            if picks:
+                ok_images[str(camera)] = picks
         options = ReportOptions(
             day=day, hours=hours,
             reasons=params.get("reasons") or {},
@@ -789,7 +803,7 @@ class _Handler(BaseHTTPRequestHandler):
             "destination": app.settings.destination,
             "line_name": app.settings.line_name,
             "reviewer": app.cfg.reviewer or DEFAULT_REVIEWER,
-            "ng_images_per_station": max(1, min(MAX_NG_IMAGES,
+            "ng_images_per_station": max(1, min(MAX_IMAGE_SLOTS,
                                                 int(app.cfg.ng_images_per_station))),
             "image_max_edge": int(app.cfg.image_max_edge),
             "overlay_annotations": bool(app.cfg.overlay_annotations),
@@ -857,8 +871,8 @@ class _Handler(BaseHTTPRequestHandler):
                 if (camera, ts) in tag_map}
         draft = app.storage.get_draft(day.isoformat()) or {}
         payload = draft.get("payload") or {}
-        limit = min(MAX_NG_IMAGES, max(1, int((query.get("limit") or
-                                               [app.cfg.ng_images_per_station])[0])))
+        limit = min(MAX_IMAGE_SLOTS, max(1, int((query.get("limit") or
+                                                 [app.cfg.ng_images_per_station])[0])))
         ng_set = set(ng_times)
         picked = [ts for ts in (payload.get("picked_images") or {}).get(camera, [])
                   if ts and ts in ng_set][:limit]
@@ -877,7 +891,7 @@ class _Handler(BaseHTTPRequestHandler):
             "note": _camera_note(config), "limit": limit,
             "ng_total": len(ng_times), "picked": picked, "tags": tags,
             "ok": int(row[3] or 0) if row else 0,
-            "ok_pick": (payload.get("ok_images") or {}).get(camera),
+            "ok_pick": _ok_pick_list((payload.get("ok_images") or {}).get(camera)),
             "ng": [{"ts": ts, "tag": tags.get(ts, "")} for ts in ng_times],
             "reason": (payload.get("reasons") or {}).get(camera) or "",
             "auto_reason": auto,

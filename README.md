@@ -356,8 +356,8 @@ MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖
 ### 取图规则
 
 - **NG 证据帧**：NG 事件时间与该相机图片单元格（默认 `A0`）帧时间最近且相差 ≤ 5 秒；渲染图（`kind=render`）优先，缺失回退原图并在工作台标「原图」角标
-- **OK 参考图**：时段内 OK 记录时间中位数附近取一帧，匹配窗口 5 秒 → 60 秒 → 300 秒逐级放宽
-- 每工站最多 12 张 NG 图（报告 M..X 列），单图长边压到 800 px 以内
+- **OK 参考图**：时段内 OK 记录时间中位数附近取一帧，匹配窗口 5 秒 → 60 秒 → 300 秒逐级放宽；也可在图库里多选（首张作 F 列参考图，其余作为误判 OK 证据图追加到 NG 图之后）
+- 每台相机最多 100 张图片（NG 图占报告 M..X 列，超出模板 12 列时向右自动扩展；未手选时自动抽 12 张），单图长边压到 800 px 以内
 
 ### 输出规范
 
@@ -405,7 +405,7 @@ MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖
 | 配置项 | 说明 | 默认值 |
 |---|---|---|
 | `pdf_engine` | `reportlab` / `com` | `reportlab` |
-| `ng_images_per_station` | 每工站 NG 图上限（1~8） | `6` |
+| `ng_images_per_station` | 每台相机图片上限（1~100，含 NG 与误判 OK） | `100` |
 | `image_max_edge` | 嵌入图片长边上限（px，200~2000） | `800` |
 | `reviewer` | 默认编制人 / 审核人 | 空 |
 | `op_aggregate` | 数量聚合方式 `median` / `max` / `first` | `median` |

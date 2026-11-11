@@ -356,7 +356,7 @@ class ReportConfig:
     """
 
     pdf_engine: str = "reportlab"         # reportlab | com
-    ng_images_per_station: int = 6        # 每工站 NG 图片上限（1~8）
+    ng_images_per_station: int = 100      # 每工站/每相机图片上限（1~100）
     image_max_edge: int = 800             # 嵌入/绘制图片长边上限（px）
     reviewer: str = ""                    # 默认审核人/编制人
     op_aggregate: str = "median"          # 数量聚合：median | max | first
@@ -382,7 +382,7 @@ def load_report_config(data_dir: Path) -> ReportConfig:
         return ReportConfig()
     return ReportConfig(
         pdf_engine=str(raw.get("pdf_engine", "reportlab")).lower(),
-        ng_images_per_station=max(1, min(8, int(raw.get("ng_images_per_station", 6)))),
+        ng_images_per_station=max(1, min(100, int(raw.get("ng_images_per_station", 100)))),
         image_max_edge=max(200, min(2000, int(raw.get("image_max_edge", 800)))),
         reviewer=str(raw.get("reviewer", "")),
         op_aggregate=str(raw.get("op_aggregate", "median")).lower(),

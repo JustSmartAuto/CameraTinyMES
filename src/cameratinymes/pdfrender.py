@@ -195,7 +195,7 @@ def _letter(index: int) -> str:
 
 def _is_image_col(letter: str) -> bool:
     index = _col_index(letter)
-    return 13 <= index <= 24     # M..X
+    return index >= 13     # M 起为图片列（模板 12 列，可按需向右扩展）
 
 
 # ---------- 文本排版 ----------
@@ -301,13 +301,14 @@ def render_pdf(layout: LayoutModel, *, images: list[ImageSpec] | None = None,
     avail_w = PAGE[0] - 2 * MARGIN
     avail_h = PAGE[1] - 2 * MARGIN - FOOTER_H
     used_images = {picture.col for picture in pictures}
+    max_images = max(1, sum(1 for column in layout.columns if _is_image_col(column.letter)))
 
     geometry = None
     scale = 0.0
     image_limit = 0
     full_geometry = None
     full_scale = 0.0
-    for limit in range(24 - 13 + 1, 0, -1):     # 12 → 1
+    for limit in range(max_images, 0, -1):
         candidate = _Geometry(layout, limit, used_images)
         if candidate.total_width <= 0 or candidate.total_height <= 0:
             continue
@@ -321,15 +322,15 @@ def render_pdf(layout: LayoutModel, *, images: list[ImageSpec] | None = None,
         raise ValueError("版面为空，无法渲染 PDF")
     if scale < MIN_SCALE and full_geometry is not None and full_scale >= scale - 0.05:
         # 减图也救不回可读比例（通常是行数过多、受页高限制），保留全部图片列更有价值
-        geometry, scale, image_limit = full_geometry, full_scale, 12
+        geometry, scale, image_limit = full_geometry, full_scale, max_images
     note = ""
     if scale < MIN_SCALE:
         note = "已压缩至 1 页"
         warnings.append(f"PDF 缩放比例 {scale:.2f} 低于 {MIN_SCALE}，已压缩至 1 页")
-        if image_limit < 12:
+        if image_limit < max_images:
             warnings.append(f"图片列已压缩为每站 {image_limit} 列")
-    elif image_limit < 12:
-        dropped = 12 - image_limit
+    elif image_limit < max_images:
+        dropped = max_images - image_limit
         note = f"图片列超出单页宽度，已省略每站后 {dropped} 列"
         warnings.append(note)
 

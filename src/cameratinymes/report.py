@@ -61,7 +61,8 @@ HEADER_FILL = "00B050"
 SHEET_TITLE_FMT = "{project}视觉改善分析"
 ROW_HEIGHT_HEADER = 18
 ROW_HEIGHT_DATA = 77
-MAX_NG_IMAGES = NG_IMAGE_COLUMNS
+MAX_NG_IMAGES = NG_IMAGE_COLUMNS    # 模板固定 12 列图片位，超出图片按需向右扩展
+MAX_IMAGE_SLOTS = 100               # 每相机图片上限（含 NG 与误判 OK）
 
 STATION_PATTERN = r"^(OP\d+)"
 
@@ -79,7 +80,7 @@ class ReportOptions:
     other_ng: dict[str, int] = field(default_factory=dict)      # 工站/相机→其他NG 改数
     picked_images: dict[str, list[str]] = field(default_factory=dict)  # 相机→NG ts（渲染图）
     show_physical: bool = False                        # 实物图片列（E）是否显示
-    ok_images: dict[str, dict] = field(default_factory=dict)  # 相机→{ts, kind} 指定 OK 参考图
+    ok_images: dict[str, list[dict]] = field(default_factory=dict)  # 相机→[{ts, kind}] OK 图（首张作 F 列参考图）
     tickets: dict[str, list[int]] = field(default_factory=dict)  # 工站→关联工单 id
     overlay_annotations: bool = False                  # 报告图片是否叠加人工标注框
 
@@ -249,6 +250,7 @@ def collect_stats(storage, cameras: list[CameraConfig], options: ReportOptions,
 
     rows: dict[str, tuple] = {}
     tag_map = storage.list_report_tags(day_text)
+    limit = max(1, min(MAX_IMAGE_SLOTS, int(config.ng_images_per_station)))
 
     groups: dict[tuple[str, str], StationStat] = {}
     for camera in enabled:
@@ -278,9 +280,9 @@ def collect_stats(storage, cameras: list[CameraConfig], options: ReportOptions,
         picked = [ts for ts in options.picked_images.get(camera.name, [])
                   if ts and ts in ng_set]
         if picked:
-            cam.picked = picked[:MAX_NG_IMAGES]
+            cam.picked = picked[:limit]
         else:
-            cam.picked = auto_pick(cam.ng_times, tag_map, camera.name)
+            cam.picked = auto_pick(cam.ng_times, tag_map, camera.name, MAX_NG_IMAGES)
         block.cameras.append(cam)
 
     for (station, _), block in groups.items():
@@ -307,14 +309,15 @@ def collect_stats(storage, cameras: list[CameraConfig], options: ReportOptions,
 
 
 def auto_pick(ng_times: list[str], tag_map: dict[tuple[str, str], str],
-              camera: str) -> list[str]:
-    """自动抽图：优先未标注 tag 的 NG，均匀分布，最多 12 张。"""
+              camera: str, limit: int = MAX_NG_IMAGES) -> list[str]:
+    """自动抽图：优先未标注 tag 的 NG，均匀分布，最多 limit 张。"""
     untagged = [ts for ts in ng_times if (camera, ts) not in tag_map]
     pool = untagged or list(ng_times)
-    if len(pool) <= MAX_NG_IMAGES:
+    limit = max(1, min(MAX_IMAGE_SLOTS, int(limit)))
+    if len(pool) <= limit:
         return pool
-    step = len(pool) / MAX_NG_IMAGES
-    return [pool[min(len(pool) - 1, int(i * step))] for i in range(MAX_NG_IMAGES)]
+    step = len(pool) / limit
+    return [pool[min(len(pool) - 1, int(i * step))] for i in range(limit)]
 
 
 def auto_reason(cam: CameraStat, camera: CameraConfig | None,
@@ -392,27 +395,33 @@ def build_layout(stats: ReportStats, options: ReportOptions, *,
                  project_name: str = "", destination: str = "",
                  line_name: str = "", created_at: datetime | None = None,
                  created_by: str = "", db_backend: str = "",
-                 cameras: list[CameraConfig] | None = None) -> LayoutModel:
+                 cameras: list[CameraConfig] | None = None,
+                 image_columns: int = NG_IMAGE_COLUMNS) -> LayoutModel:
     """按模板生成主表版面（不含图片字节，图片由调用方回填 ImageSpec）。"""
     created_at = created_at or datetime.now()
     title = SHEET_TITLE_FMT.format(project=project_name or "")
+    image_columns = max(NG_IMAGE_COLUMNS, min(MAX_IMAGE_SLOTS, int(image_columns)))
+    last_letter = _col_letter(12 + image_columns)   # M 起算，第 image_columns 列的字母
+    columns = [ColumnSpec(letter, width, hidden)
+               for letter, width, hidden in COLUMNS]
+    for index in range(NG_IMAGE_COLUMNS, image_columns):
+        columns.append(ColumnSpec(_col_letter(13 + index), 27.18, False))
     layout = LayoutModel(
         sheet_name=f"{options.day.month}月{options.day.day}日",
         title=title,
-        columns=[ColumnSpec(letter, width, hidden)
-                 for letter, width, hidden in COLUMNS],
+        columns=columns,
     )
     ranges = hour_ranges(options.day, options.hours)
     camera_map = {c.name: c for c in (cameras or [])}
 
     # 第 1 行：标题
-    layout.merges.append("B1:X1")
+    layout.merges.append(f"B1:{last_letter}1")
     layout.rows[1] = 28
     layout.cells.append(CellSpec(1, "B", title, bold=True, size=18, border=False))
 
     # 第 2 行：生成时间 / 目的地 / 线体（避开默认隐藏的 E、F 列）
     layout.rows[2] = 20
-    layout.merges.extend(["B2:C2", "G2:J2", "L2:P2", "Q2:X2"])
+    layout.merges.extend(["B2:C2", "G2:J2", "L2:P2", f"Q2:{last_letter}2"])
     layout.cells.extend([
         CellSpec(2, "B", f"生成时间：{created_at:%Y-%m-%d %H:%M}", align="left"),
         CellSpec(2, "D", f"目的地：{destination or '—'}", align="left"),
@@ -426,7 +435,7 @@ def build_layout(stats: ReportStats, options: ReportOptions, *,
     for letter, label in HEADER_LABELS.items():
         layout.cells.append(CellSpec(3, letter, label, bold=True, size=11,
                                      color="FFFFFF", fill=HEADER_FILL))
-    for index in range(NG_IMAGE_COLUMNS):
+    for index in range(image_columns):
         letter = _col_letter(13 + index)  # M=13 起
         layout.cells.append(CellSpec(3, letter, str(index + 1), bold=True, size=11,
                                      color="FFFFFF", fill=HEADER_FILL))
@@ -459,7 +468,7 @@ def build_layout(stats: ReportStats, options: ReportOptions, *,
                          align="left", size=11, wrap=True),
             ])
             layout.merges.append(f"B{row}:B{row + 1}")
-            layout.merges.append(f"M{row + 1}:X{row + 1}")
+            layout.merges.append(f"M{row + 1}:{last_letter}{row + 1}")
         end_row = rows[block.cameras[-1].camera] + 1
         layout.merges.append(f"C{start_row}:C{end_row}")
         for letter in ("G", "H", "I", "J"):
@@ -475,9 +484,9 @@ def build_layout(stats: ReportStats, options: ReportOptions, *,
     last = (max(rows.values()) + 1) if rows else 3
     layout.footer_start = last + 1
     for offset in (1, 2, 3):
-        layout.merges.append(f"B{last + offset}:X{last + offset}")
+        layout.merges.append(f"B{last + offset}:{last_letter}{last + offset}")
         layout.rows[last + offset] = 20 if offset < 3 else 24
-    layout.merges.append(f"B{last + 4}:X{last + 4}")
+    layout.merges.append(f"B{last + 4}:{last_letter}{last + 4}")
     layout.rows[last + 4] = 18
     rate = (stats.total_ng / stats.total_products * 100) if stats.total_products else 0.0
     layout.cells.extend([
@@ -721,19 +730,31 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
     warnings.extend(stats.warnings)
     check()
 
+    limit = max(1, min(MAX_IMAGE_SLOTS, int(config.ng_images_per_station)))
+    ng_counts = {cam.camera: min(len(cam.picked), limit)
+                 for block in stats.stations for cam in block.cameras}
+    ok_selected = {cam.camera: _ok_picks(options, cam.camera)
+                   for block in stats.stations for cam in block.cameras}
+    image_columns = NG_IMAGE_COLUMNS
+    for camera_name, count in ng_counts.items():
+        extra = max(0, len(ok_selected.get(camera_name, [])) - 1)
+        extra = min(extra, max(0, limit - count))
+        image_columns = max(image_columns, count + extra)
+
     layout = build_layout(stats, options, project_name=project_name,
                           destination=destination, line_name=line_name,
                           created_at=now, created_by=created_by,
-                          db_backend=db_backend, cameras=cameras)
+                          db_backend=db_backend, cameras=cameras,
+                          image_columns=image_columns)
     extras: list[LayoutModel] = []
     if include_ticket_sheet and tickets:
         extras.append(build_ticket_layout(tickets))
     extras.append(build_audit_layout(stats, day=options.day, cameras=cameras))
 
     rows = camera_rows(stats)
-    limit = max(1, min(MAX_NG_IMAGES, int(config.ng_images_per_station)))
-    total_pics = sum(min(len(cam.picked), limit)
-                     for block in stats.stations for cam in block.cameras)
+    total_pics = sum(ng_counts.values()) + sum(
+        min(max(0, len(picks) - 1), max(0, limit - ng_counts.get(name, 0)))
+        for name, picks in ok_selected.items())
     pictures: list[ImageSpec] = []
     done = 0
     for block in stats.stations:
@@ -756,7 +777,7 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
                     camera=cam.camera, ts=ts))
     layout.images = pictures
 
-    # OK 参考图（F 列，隐藏列）：优先使用人工从图库选定的图，否则取时段内 OK 记录中位数附近一帧
+    # OK 图：首张作 F 列参考图，其余（误判 OK 多选）接在 NG 图片之后
     tick("images", total_pics, total_pics, "取 OK 参考图")
     ok_count = 0
     iso = ranges_iso(hour_ranges(options.day, options.hours))
@@ -768,7 +789,8 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
             result = result_cell(camera_cfg) if camera_cfg is not None else None
             if result is None:
                 continue
-            pick = (options.ok_images or {}).get(cam.camera) or {}
+            picks = ok_selected.get(cam.camera) or []
+            pick = picks[0] if picks else {}
             ok_ts = str(pick.get("ts") or "")
             data = None
             if ok_ts:
@@ -801,7 +823,34 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
                                                 image_name(cam.camera), stamp, data)
             pictures.append(ImageSpec(row=rows[cam.camera], col="F", data=data,
                                       camera=cam.camera, ts=ok_ts))
-            layout.images = pictures
+
+            # 多选 OK 图（误判 OK）：接在 NG 图片后面，同相机图片总数不超过 limit
+            base = ng_counts.get(cam.camera, 0)
+            room = max(0, limit - base)
+            for offset, extra in enumerate(picks[1:][:room], start=1):
+                done += 1
+                tick("images", done, total_pics, f"取图 {done}/{total_pics}")
+                check()
+                col = _col_letter(13 + base + offset - 1)
+                extra_data = _load_selected_image(storage, cam.camera,
+                                                  str(extra.get("ts") or ""),
+                                                  str(extra.get("kind") or ""), config,
+                                                  image_name(cam.camera))
+                if not extra_data:
+                    warnings.append(f"{cam.camera} 误判 OK 图 {extra.get('ts')} 缺失，已跳过")
+                    continue
+                if options.overlay_annotations:
+                    try:
+                        stamp = datetime.fromisoformat(str(extra.get("ts") or ""))
+                    except ValueError:
+                        stamp = None
+                    if stamp is not None:
+                        extra_data = _overlay_annotations(
+                            storage, cam.camera, image_name(cam.camera), stamp, extra_data)
+                pictures.append(ImageSpec(row=rows[cam.camera], col=col,
+                                          data=extra_data, camera=cam.camera,
+                                          ts=str(extra.get("ts") or "")))
+    layout.images = pictures
 
     tick("xlsx", 0, 1, "生成表格")
     check()
@@ -975,6 +1024,32 @@ def _overlay_annotations(storage, camera: str, cell: str, stamp: datetime,
     except Exception as exc:
         log.warning("叠加标注框失败 %s@%s：%s", camera, stamp, exc)
         return data
+
+
+def _ok_picks(options: ReportOptions, camera: str) -> list[dict]:
+    """归一化人工选择的 OK 图：兼容旧的单对象写法，按时间戳去重并限量。"""
+    raw = (options.ok_images or {}).get(camera)
+    if isinstance(raw, dict):
+        raw = [raw] if raw.get("ts") else []
+    if not isinstance(raw, list):
+        return []
+    picks: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        ts = str(item.get("ts") or "")
+        if not ts:
+            continue
+        kind = item.get("kind") if item.get("kind") in ("image", "render") else ""
+        key = (ts, kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        picks.append({"ts": ts, "kind": kind})
+        if len(picks) >= MAX_IMAGE_SLOTS:
+            break
+    return picks
 
 
 def _load_selected_image(storage, camera: str, ts: str, kind: str,
