@@ -36,7 +36,12 @@
   - **GigE 工业相机**：支持 GigE Vision / GenICam 标准的工业面阵相机，软件取像后结合检测算法 / 判定逻辑产出结果，适合需要自主成像与检测的场景
 - **多相机并发**：可同时连接 / 混用多台智能相机与 GigE 工业相机，单相机掉线自动重连，不影响其他相机
 - **多单元格订阅**：智能相机每台可配置多个电子表格单元格（测量值、分数、判定结果等），支持按结果事件（`resultChanged`）触发或定时轮询（`poll_interval`）
-- **单元格数据类型**：`auto / int / float / string / bool / other / image`，未知类型可用 `auto`（按值推断）
+- **单元格数据类型**：`auto / int / float / string / bool / other / image / pointcloud`，未知类型可用 `auto`（按值推断）
+- **点云单元格（`pointcloud`）**：3D 相机（如 OP20-55 / `192.168.10.55` 的 A0）点云单元格值为占位标记 `❒PointCloud`，
+  软件从 `acqPointCloudView` 取 `PointCloud3D.url`（`/cam0/pc/<id>`）下载 CPCD 点云（`image/x-cpcd`）原样入库
+  （`images.kind='pointcloud'`，头部 20 字节 + N×3 个 float32 的 xyz 毫米坐标），同时记一条 `[点云 N 点 X MB]` 样本；
+  `auto` 类型同样可自动识别点云单元格（与图像 `❒Image` 区分）。点云不参与 AV1 打包与阈值判定；
+  单帧约 12 MB（百万点）量级，MariaDB 的 `max_allowed_packet` 建议不低于 32M（格式与取用详见下文「点云（CPCD）存储」）
 - **阈值判定**：advanced 记录模式 + 数值类型时按上下限判定 OK/NG；simple 模式仅记录数据、不判定
 - **报表单元格用途**（每台相机独立配置，不要求都叫 C11 / A0）：单元格「用途」可设为
   `自动（按名称推断）/ 普通数据 / 判定结果 / 报告图片`；判定结果单元格可自定义通过值与不通过值
@@ -58,6 +63,7 @@
 | 语言/环境 | Python 3.13，尽量只用轻量依赖 |
 | 包管理 | [uv](https://github.com/astral-sh/uv)（`pyproject.toml` + `uv.lock`） |
 | 智能相机通信 | CogSocket WebSocket（JSON-RPC：GET/POST/PUT/DELETE + 事件订阅），参考 `reference/CogSocket&WebApi.md` |
+| 点云采集 | 3D 相机点云单元格（`❒PointCloud`）→ `acqPointCloudView` 的 `PointCloud3D.url` → HTTP 下载 CPCD（`image/x-cpcd`），原样入库 `images`（`kind=pointcloud`），不参与 AV1 打包 |
 | GigE 工业相机 | GigE Vision / GenICam 取像（帧回调触发采样与判定） |
 | 数据存储 | 优先连接 MariaDB（工控机可经 `reference/mariadb_installer.py` 安装）；连接不可用时自动回退到标准库 `sqlite3` 单文件数据库，保证最小可用性 |
 | 报表 | `openpyxl`（xlsx） |
@@ -76,7 +82,7 @@
 | 表 | 说明 | 关键字段 |
 |---|---|---|
 | `samples` | 采样记录（含判定依据快照） | `ts` 时间戳、`camera` 相机、`cell` 单元格、`job` 拍照时相机作业（jobx 配方名）、`value` 数值、`text` 原始文本、`ok` 判定（1=OK / 0=NG / NULL=无阈值）、`lower_limit` / `upper_limit` 判定时上下限快照、`spec_version` 规格版本（预留） |
-| `images` | 单帧图像 BLOB（旧数据与编码回退） | `ts`、`camera`、`cell`、`job`（jobx 配方名）、`kind`（`image`=原图 / `render`=结果渲染图）、`mime`、`width`、`height`、`data` |
+| `images` | 单帧图像 BLOB（旧数据与编码回退） | `ts`、`camera`、`cell`、`job`（jobx 配方名）、`kind`（`image`=原图 / `render`=结果渲染图 / `pointcloud`=CPCD 点云）、`mime`、`width`、`height`、`data` |
 | `image_streams` | AV1 帧序列分片（IVF 码流） | `ts_start` / `ts_end` 分片首末帧时间、`camera`、`cell`、`job`（jobx 配方名）、`kind`、`codec`、`container`、`frame_count`、`width`、`height`、`size_bytes`、`data` |
 | `image_frames` | 分片帧索引 | `stream_id`（关联 `image_streams.id`，级联删除）、`frame_index` 片内序号、`ts`、`camera`、`cell`、`kind`、`width`、`height` |
 | `events` | 异常事件（轻量） | `ts` 首次发生、`last_ts` 最近发生、`recovered_ts` 恢复时间、`camera`、`cell`、`code` 事件码、`message`、`status`（`open` / `recovered` / `acked`） |
@@ -160,6 +166,33 @@
 | 检索需求 | 通常批量访问 | 常需要单帧随机访问 |
 
 软件已自动处理：满足 AV1 条件的走分片存储，不满足的（或 ffmpeg 不可用）回退逐张 `images` 表存储，两种来源在查询 / 导出时合并呈现。
+
+### 点云（CPCD）存储
+
+适用于 In-Sight 3D 相机（3D 视觉工站，如 OP20-55 / `192.168.10.55` 的 A0）。点云单元格在 `HmiResult.cells` 中只是一个占位标记 `❒PointCloud`，点云本体需另行下载：
+
+| 环节 | 说明 |
+|---|---|
+| 地址解析 | `HmiResult.acqPointCloudView` → `layers[*].graphics` → `PointCloud3D.url`（形如 `/cam0/pc/000000000000528`） |
+| 下载 | `GET http://<相机IP>:<端口>/cam0/pc/<id>`，返回 `image/x-cpcd`（Cognex Point Cloud Data） |
+| 格式 | 头部 20 字节（小端：魔数 `0xB0B15BAD`、保留、头部长度 20、点数 N、保留），其后为 N × 3 个 `float32`（x / y / z，单位毫米）。`文件长度 = 20 + N × 12` |
+| 入库 | 原样写入 `images`（`kind=pointcloud`、`mime=image/x-cpcd`、`width`/`height` 为 NULL），同时在 `samples` 记一条 `[点云 N 点 X MB]` 文本样本，便于合表查看与检索 |
+| 采样 | 与图像单元格一致，强制按 `resultChanged` 事件采样；`auto` 类型可自动识别为点云（不会被误判成图像） |
+| 不参与 | AV1 打包（分组查询限定 `kind IN ('image','render')`）、阈值判定、报告取图 |
+
+单帧规模参考：OP20-55 / A0 约 **101 万点 / 12.1 MB**（实测 z 量程 −5.04 ~ −1.16 mm）。因此：
+
+- MariaDB 的 `max_allowed_packet` 建议不低于 **32M**（默认 16M 时单帧 12 MB 已接近上限）；
+- 点云不做压缩，入库占用随拍照次数线性增长，长期留存请配合时间范围清理策略。
+
+取用示例（SQLite / MariaDB 通用）：
+
+```sql
+SELECT ts, cell, length(data) AS bytes FROM images
+ WHERE camera='OP20-55' AND kind='pointcloud' ORDER BY ts DESC LIMIT 10;
+```
+
+读出 `data` 后按上表格式解析即可，`src/cameratinymes/pointcloud.py` 的 `parse_cpcd()` 会校验魔数与长度并返回点数。当前**未提供**点云可视化与 PLY / PCD 转换导出（见路线图）。
 
 ## 数据库连接（MariaDB 优先，SQLite 兜底）
 
@@ -259,6 +292,8 @@ MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖
 | `poll` | 软件定时轮询 | 每隔 `poll_interval` 秒调用 `queryCellResults` 拉取单元格当前值 |
 
 **GigE 工业相机**由软件端取像：相机帧回调 → 触发采样与判定逻辑 → 结果落库（OK/NG 判定在软件内完成，阈值配置与智能相机共用一套）。
+
+**图像 / 点云等媒体单元格**无论 `sample_mode` 怎么配，都强制按 `resultChanged` 事件采样（轮询会重复下载同一帧），并各自走独立的下载任务：图像解码为 JPEG（或进 AV1 分片），点云原样落库。
 
 ## 误判标注（人工复核）
 
@@ -382,6 +417,7 @@ MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖
 | 路径 | 说明 |
 |---|---|
 | `src/cameratinymes/report.py` | 改善报告：小时统计、原因摘要、`LayoutModel` 版面、xlsx 生成 |
+| `src/cameratinymes/pointcloud.py` | 点云单元格支持：`❒PointCloud` 识别、`acqPointCloudView` 地址解析、CPCD 下载与头部解析 |
 | `src/cameratinymes/wpsdispimg.py` | WPS `DISPIMG` 单元格图片注入（`cellimages.xml` + 关系 + Content_Types） |
 | `src/cameratinymes/pdfrender.py` | 由 `LayoutModel` 渲染 A3 横版单页米黄底 PDF |
 | `src/cameratinymes/reportstore.py` | 报告入库 / 分块落盘 / 重新导出 / 保留清理 |
@@ -426,6 +462,7 @@ uv run python build_exe.py           # PyInstaller 打包 dist/exe_{yyyyMMddHHmm
 
 - [ ] `events` 表接入采集端写入（相机断线、NG 突发），并在工作台提示
 - [ ] 规格版本管理：把 `ParameterSpecs.Version` 一类规格版本落到判定与报告快照
+- [ ] 点云后续处理：CPCD → PLY / PCD 转换导出、点云可视化（当前仅原样入库 + 点数校验）
 
 ### 明确不做（与非目标保持一致）
 

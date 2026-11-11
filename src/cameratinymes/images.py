@@ -53,7 +53,10 @@ def cell_is_image(hmi_result: dict, cell_name: str) -> bool:
     依据：单元格自己的值是图像占位标记（如「❒Image」）或自身携带图像 URL。
     注意不能看 acqImageView——那是整次拍照的采集视图，任何单元格的结果里都有，
     用它判断会把所有 auto 单元格误判为图像单元格。
+    点云单元格的「❒PointCloud」标记同样含 ❒，需先排除。
     """
+    from .pointcloud import POINTCLOUD_MARKER
+
     for item in (hmi_result or {}).get("cells") or []:
         if item.get("location") != cell_name and item.get("name") != cell_name:
             continue
@@ -65,6 +68,8 @@ def cell_is_image(hmi_result: dict, cell_name: str) -> bool:
             candidates.extend(v for v in (data.get("url"), data.get("value"))
                               if isinstance(v, str))
         for v in candidates:
+            if POINTCLOUD_MARKER in v:
+                return False
             if v.startswith(("/", "http", "data:")) or "❒" in v:
                 return True
         return False

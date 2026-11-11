@@ -35,11 +35,13 @@ def ensure_subdirs(root: Path) -> None:
 
 
 # 单元格数据类型：设置时通常未知，用 auto 让运行时按值推断
-CELL_DATA_TYPES = ("auto", "int", "float", "string", "bool", "image", "other")
+CELL_DATA_TYPES = ("auto", "int", "float", "string", "bool", "image", "pointcloud", "other")
 # 仅数值类型应用上下限阈值；auto 在运行时尝试按数值解析
 NUMERIC_DATA_TYPES = {"auto", "int", "float"}
 # 图像类型：从相机下载图像（结果图单元格额外取渲染图），不参与阈值判定
 IMAGE_DATA_TYPE = "image"
+# 点云类型：从相机下载 CPCD 点云（acqPointCloudView），不参与阈值判定
+POINTCLOUD_DATA_TYPE = "pointcloud"
 # 单元格用途：auto=按名称推断；data=普通数据；result=判定结果；image=报告图片
 CELL_ROLES = ("auto", "data", "result", "image")
 DEFAULT_RESULT_CELL = "C11"
@@ -56,7 +58,7 @@ class CellConfig:
     """单个订阅单元格。"""
 
     name: str  # 单元格名或地址，如 "A2" / "Measure.Width"
-    data_type: str = "auto"  # auto/int/float/string/bool/other；auto=设置时未知，运行时推断
+    data_type: str = "auto"  # auto/int/float/string/bool/image/pointcloud/other；auto=设置时未知，运行时推断
     record_mode: str = "advanced"  # simple=仅记录；advanced=记录+阈值判定
     sample_mode: str = "event"  # event=按结果事件采样；poll=按固定周期轮询
     poll_interval: float = 1.0  # 轮询周期（秒），仅 poll 模式
@@ -82,6 +84,16 @@ class CellConfig:
     def is_image(self) -> bool:
         """是否为图像类型（从相机下载图像，不限上下限）。"""
         return self.data_type == IMAGE_DATA_TYPE
+
+    @property
+    def is_pointcloud(self) -> bool:
+        """是否为点云类型（从相机下载 CPCD 点云，不限上下限）。"""
+        return self.data_type == POINTCLOUD_DATA_TYPE
+
+    @property
+    def is_media(self) -> bool:
+        """是否为图像 / 点云等媒体类型（随结果事件采样，不参与阈值判定）。"""
+        return self.is_image or self.is_pointcloud
 
     @property
     def is_result_cell(self) -> bool:

@@ -152,6 +152,9 @@ class CameraPanel(tk.Frame):
             if cell.is_image:
                 tk.Label(row, text="图像", bg=C["chrome_lighter"],
                          fg=C["chrome_dark"], font=theme.FONT).pack(side="right")
+            elif cell.is_pointcloud:
+                tk.Label(row, text="点云", bg=C["chrome_lighter"],
+                         fg=C["chrome_dark"], font=theme.FONT).pack(side="right")
             elif cell.is_simple_record:
                 tk.Label(row, text="仅记录", bg=C["chrome_lighter"],
                          fg=C["chrome_dark"], font=theme.FONT).pack(side="right")
@@ -773,6 +776,9 @@ class MonitorApp:
         cell_cfg = next((c for c in cfg.cells if c.name == cell_name), None)
         if cell_cfg and cell_cfg.is_image:
             messagebox.showinfo("提示", f"单元格「{cell_name}」为图像类型，没有数值趋势可绘制。")
+            return
+        if cell_cfg and cell_cfg.is_pointcloud:
+            messagebox.showinfo("提示", f"单元格「{cell_name}」为点云类型，没有数值趋势可绘制。")
             return
         if cell_cfg and cell_cfg.data_type in ("string", "bool", "other"):
             messagebox.showinfo("提示",

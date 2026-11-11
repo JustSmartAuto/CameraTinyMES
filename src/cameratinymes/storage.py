@@ -723,12 +723,14 @@ class StorageBase:
     ) -> list[tuple[str, str, str, str | None, int]]:
         """列出所有可压缩分组（同一时间窗口内 images 表帧数 ≥ min_frames 的）。
 
+        仅位图（image/render）参与 AV1 打包；点云等其他 kind 原样保留。
         返回 [(camera, cell, kind, job, frame_count)]。
         """
         sql = (
             "SELECT camera, cell, kind, job, COUNT(*)"
             " FROM images"
             " WHERE ts<?"
+            " AND kind IN ('image', 'render')"
             " AND id NOT IN (SELECT image_id FROM annotations WHERE image_id IS NOT NULL)"
             " GROUP BY camera, cell, kind, job"
             f" HAVING COUNT(*) >= {min_frames}"
@@ -902,17 +904,18 @@ class StorageBase:
         mime: str = "image/png",
         job: str | None = None,
     ) -> tuple[int | None, int | None]:
-        """写入图像 BLOB，返回 (宽, 高)（无法解析时为 None）。"""
+        """写入图像 BLOB，返回 (宽, 高)（无法解析时为 None；点云等非位图不解析）。"""
         width = height = None
-        try:
-            from io import BytesIO
+        if mime != "image/x-cpcd":
+            try:
+                from io import BytesIO
 
-            from PIL import Image as PILImage
+                from PIL import Image as PILImage
 
-            with PILImage.open(BytesIO(data)) as im:
-                width, height = im.size
-        except Exception:
-            pass
+                with PILImage.open(BytesIO(data)) as im:
+                    width, height = im.size
+            except Exception:
+                pass
         self._execute(
             "INSERT INTO images (ts, camera, cell, job, kind, mime, width, height, data)"
             " VALUES (?,?,?,?,?,?,?,?,?)",

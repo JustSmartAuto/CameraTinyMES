@@ -16,6 +16,8 @@ from .config import CameraConfig, CellConfig, image_cell
 from .images import (cell_is_image, compose_render, fetch_image, fetch_json,
                      fetch_text, image_source_size, resolve_sources, scaled_url,
                      to_jpeg, view_size)
+from .pointcloud import (POINTCLOUD_KIND, POINTCLOUD_MIME, cell_is_pointcloud,
+                         fetch_pointcloud, parse_cpcd, pointcloud_source)
 from .storage import StorageBase
 
 log = logging.getLogger(__name__)
@@ -91,6 +93,19 @@ class CameraWorker:
         except queue.Full:
             pass
 
+    @staticmethod
+    def _detect_media(hmi_result: dict,
+                      cells: list[CellConfig]) -> tuple[set[str], set[str]]:
+        """按单元格自身的值标记识别 (图像单元格, 点云单元格) 集合。"""
+        images: set[str] = set()
+        pointclouds: set[str] = set()
+        for cell in cells:
+            if cell_is_pointcloud(hmi_result, cell.name):
+                pointclouds.add(cell.name)
+            elif cell_is_image(hmi_result, cell.name):
+                images.add(cell.name)
+        return images, pointclouds
+
     async def _run(self) -> None:
         while self._running:
             try:
@@ -115,59 +130,71 @@ class CameraWorker:
         self._push("session", sid)
         await self._refresh_job()
 
-        # auto 单元格运行时自动识别：依据单元格自身的值是否为图像标记（❒Image），
-        # 而非 acqImageView——后者是整次拍照的采集视图，任何单元格的结果都带，
-        # 用它判断会把所有 auto 单元格误判为图像单元格。
+        # auto 单元格运行时自动识别：依据单元格自身的值是否为图像标记（❒Image）
+        # 或点云标记（❒PointCloud），而非 acqImageView——后者是整次拍照的采集视图，
+        # 任何单元格的结果都带，用它判断会把所有 auto 单元格误判为图像单元格。
         auto_cells = [c for c in self.cfg.cells if c.data_type == "auto"
-                      and not c.is_image]
+                      and not c.is_media]
         auto_image_names: set[str] = set()
+        auto_pointcloud_names: set[str] = set()
         if auto_cells:
             try:
                 # GET {sid}/result 返回完整 HmiResult（含 cells 各单元格的值）
                 first = await self.client.get(f"{sid}/result")
-                for c in auto_cells:
-                    if cell_is_image(first or {}, c.name):
-                        auto_image_names.add(c.name)
+                auto_image_names, auto_pointcloud_names = self._detect_media(
+                    first or {}, auto_cells)
                 if auto_image_names:
-                    log.info(
-                        "auto 单元格探测为图像单元格: %s （值为图像标记 ❒Image）",
-                        ", ".join(auto_image_names),
-                    )
+                    log.info("auto 单元格探测为图像单元格: %s（值为图像标记 ❒Image）",
+                             ", ".join(sorted(auto_image_names)))
+                if auto_pointcloud_names:
+                    log.info("auto 单元格探测为点云单元格: %s（值为点云标记 ❒PointCloud）",
+                             ", ".join(sorted(auto_pointcloud_names)))
             except Exception as exc:
                 log.debug("auto 单元格预探测 GET %s/result 失败: %s", sid, exc)
 
-        # 图像随结果事件一起到达：图像单元格一律按事件采样（poll 会重复下载同一张图）
+        # 图像 / 点云随结果事件一起到达：媒体单元格一律按事件采样（轮询会重复下载同一张）
         event_cells = [c for c in self.cfg.cells
                        if c.sample_mode == "event"
-                       or c.is_image
-                       or c.name in auto_image_names]
+                       or c.is_media
+                       or c.name in auto_image_names
+                       or c.name in auto_pointcloud_names]
         poll_cells = [c for c in self.cfg.cells
                       if c.sample_mode == "poll"
-                      and not c.is_image
-                      and c.name not in auto_image_names]
+                      and not c.is_media
+                      and c.name not in auto_image_names
+                      and c.name not in auto_pointcloud_names]
 
         if event_cells:
             done = asyncio.Event()
-            image_names = ({c.name for c in event_cells if c.is_image}
-                           | auto_image_names)
+            media_names = ({c.name for c in event_cells if c.is_media}
+                           | auto_image_names | auto_pointcloud_names)
             # 缓存探测结果，首次 on_result 前可能已在预探测阶段得到
             detected = set(auto_image_names)
+            detected_pc = set(auto_pointcloud_names)
 
             def on_result(hmi_result):
-                nonlocal detected
+                nonlocal detected, detected_pc
                 try:
                     values = parse_cells(hmi_result or {})
                     ts = datetime.now()
 
                     # 兜底：如果预探测漏了，首次事件时再补一次
-                    if not detected and auto_cells:
-                        detected = {c.name for c in auto_cells
-                                    if cell_is_image(hmi_result or {}, c.name)}
-                        if detected:
+                    if (not detected or not detected_pc) and auto_cells:
+                        found_img, found_pc = self._detect_media(
+                            hmi_result or {}, auto_cells)
+                        if found_img - detected:
+                            detected |= found_img
                             log.info("auto 单元格事件触发探测为图像单元格: %s",
-                                     ", ".join(detected))
+                                     ", ".join(sorted(found_img)))
+                        if found_pc - detected_pc:
+                            detected_pc |= found_pc
+                            log.info("auto 单元格事件触发探测为点云单元格: %s",
+                                     ", ".join(sorted(found_pc)))
 
                     for cell in event_cells:
+                        if cell.is_pointcloud or cell.name in detected_pc:
+                            self._store_pointcloud(ts, cell, hmi_result)
+                            continue
                         if cell.is_image or cell.role == "image" or cell.name in detected:
                             self._store_image(ts, cell, hmi_result)
                             continue
@@ -177,8 +204,7 @@ class CameraWorker:
                             except Exception as exc:
                                 log.warning("store event cell %s failed: %s", cell.name, exc)
                     self._push("result", {k: v for k, v in values.items()
-                                          if k not in image_names
-                                          and k not in detected})
+                                          if k not in media_names})
                 finally:
                     # 必须 ready，相机才会推送下一帧
                     asyncio.ensure_future(self._safe_ready())
@@ -260,6 +286,48 @@ class CameraWorker:
                                        job=self.job)
         except Exception as exc:
             log.warning("store cell %s failed: %s", cell.name, exc)
+
+    def _store_pointcloud(self, ts: datetime, cell: CellConfig, hmi_result: dict) -> None:
+        """解析点云地址并异步下载落库（CPCD 原样存储，不做转码）。"""
+        try:
+            source = pointcloud_source(hmi_result)
+        except Exception as exc:
+            log.warning("resolve pointcloud for %s failed: %s", cell.name, exc)
+            return
+        if not source:
+            log.debug("no pointcloud source for %s", cell.name)
+            return
+        task = asyncio.ensure_future(self._download_pointcloud(ts, cell, source))
+        self._image_tasks.append(task)
+        task.add_done_callback(lambda t: self._image_tasks.remove(t)
+                               if t in self._image_tasks else None)
+
+    async def _download_pointcloud(self, ts: datetime, cell: CellConfig,
+                                   source: dict) -> None:
+        host, port = self.client.host, self.client.port
+        try:
+            data = await asyncio.to_thread(fetch_pointcloud, host, port, source["url"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("download pointcloud for %s failed: %s", cell.name, exc)
+            return
+        count = parse_cpcd(data)
+        try:
+            self.storage.insert_image(ts, self.cfg.name, cell.name, POINTCLOUD_KIND,
+                                      data, POINTCLOUD_MIME, job=self.job)
+        except Exception as exc:
+            log.warning("store pointcloud for %s failed: %s", cell.name, exc)
+            return
+        size = f"{len(data) / 1024 / 1024:.1f} MB"
+        summary = f"[点云 {count} 点 {size}]" if count else f"[点云 {size}]"
+        try:
+            # 同时记一条样本，让点云单元格出现在合表中
+            self.storage.insert_sample(ts, self.cfg.name, cell.name, summary, None,
+                                       job=self.job)
+        except Exception as exc:
+            log.warning("store pointcloud sample %s failed: %s", cell.name, exc)
+        self._push("image", {cell.name: summary})
 
     def _store_image(self, ts: datetime, cell: CellConfig, hmi_result: dict) -> None:
         """解析图像地址并异步下载落库（下载不阻塞事件循环与其他相机）。"""
