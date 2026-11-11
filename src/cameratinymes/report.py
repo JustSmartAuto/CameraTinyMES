@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import statistics
@@ -79,6 +80,7 @@ class ReportOptions:
     picked_images: dict[str, list[str]] = field(default_factory=dict)  # 相机→NG ts（渲染图）
     show_physical: bool = False                        # 实物图片列（E）是否显示
     tickets: dict[str, list[int]] = field(default_factory=dict)  # 工站→关联工单 id
+    overlay_annotations: bool = False                  # 报告图片是否叠加人工标注框
 
 
 @dataclass
@@ -739,7 +741,8 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
             if not picks:
                 continue
             images = _load_ng_images(storage, cam.camera, picks, config, warnings,
-                                     image_name(cam.camera))
+                                     image_name(cam.camera),
+                                     overlay_annotations=options.overlay_annotations)
             for index, ts in enumerate(picks):
                 done += 1
                 tick("images", done, total_pics, f"取图 {done}/{total_pics}")
@@ -823,13 +826,16 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
 
 
 FRAME_WINDOW = 5.0         # NG 事件与证据帧的最大时差（秒）
+ANNOTATION_BOX_COLOR = (255, 204, 0)   # 标注框颜色，与网页端 #ffcc00 一致
 
 
 def _load_ng_images(storage, camera: str, picks: list[str], config: ReportConfig,
-                    warnings: list[str], image_cell_name: str = IMAGE_CELL) -> dict[str, bytes]:
+                    warnings: list[str], image_cell_name: str = IMAGE_CELL,
+                    overlay_annotations: bool = False) -> dict[str, bytes]:
     """按时间戳取 NG 渲染图（缺失回退原图），返回 ts → JPEG 字节。
 
     证据帧按 §4.5：取 `|frame_ts - event_ts|` 最小且 ≤ 5s 的图片单元格帧，同一帧只用一次。
+    `overlay_annotations` 为 True 时，把该事件时刻的人工标注框烧录进图片。
     """
     try:
         start = datetime.fromisoformat(picks[0]) - timedelta(seconds=FRAME_WINDOW)
@@ -867,7 +873,10 @@ def _load_ng_images(storage, camera: str, picks: list[str], config: ReportConfig
             missing += 1
             continue
         used.add(frame[1])
-        result[ts] = frame[2]
+        data = frame[2]
+        if overlay_annotations:
+            data = _overlay_annotations(storage, camera, image_cell_name, center, data)
+        result[ts] = data
     if missing:
         warnings.append(f"{camera} 有 {missing} 张 NG 图片缺失")
     return result
@@ -886,6 +895,55 @@ def _nearest_frame(frames: list[tuple[datetime, str, bytes]], center: datetime,
             continue
         best, best_gap = frame, gap
     return best
+
+
+def _overlay_annotations(storage, camera: str, cell: str, stamp: datetime,
+                         data: bytes) -> bytes:
+    """把该时刻的人工标注方框烧录到图片上；无标注或处理失败时原样返回。
+
+    标注坐标基于标注时网页显示图（`imageWidth/imageHeight`），按目标图片尺寸等比换算。
+    """
+    try:
+        rows = storage.query_annotations(camera=camera, cell=cell,
+                                         start=stamp, end=stamp, limit=1)
+        if not rows:
+            return data
+        payload = json.loads(rows[0][8] or "{}")
+        shapes = payload.get("shapes") or []
+        if not shapes:
+            return data
+    except Exception as exc:
+        log.warning("读取标注失败 %s@%s：%s", camera, stamp, exc)
+        return data
+    try:
+        from io import BytesIO
+
+        from PIL import Image, ImageDraw
+
+        with Image.open(BytesIO(data)) as img:
+            canvas = img.convert("RGB")
+            width, height = canvas.size
+            base_w = float(payload.get("imageWidth") or width) or width
+            base_h = float(payload.get("imageHeight") or height) or height
+            scale_x, scale_y = width / base_w, height / base_h
+            draw = ImageDraw.Draw(canvas)
+            line = max(2, round(width / 240))
+            for shape in shapes:
+                points = shape.get("points") or []
+                if len(points) < 2:
+                    continue
+                xs = [float(p[0]) * scale_x for p in points if len(p) >= 2]
+                ys = [float(p[1]) * scale_y for p in points if len(p) >= 2]
+                if not xs or not ys:
+                    continue
+                draw.rectangle([min(xs), min(ys), max(xs), max(ys)],
+                               outline=ANNOTATION_BOX_COLOR, width=line)
+            out = BytesIO()
+            canvas.save(out, "JPEG", quality=92)
+            return out.getvalue()
+    except Exception as exc:
+        log.warning("叠加标注框失败 %s@%s：%s", camera, stamp, exc)
+        return data
 
 
 def _load_frame(storage, camera: str, ts: str, config: ReportConfig,

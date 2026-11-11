@@ -49,6 +49,7 @@ def save_report(storage, artifact: ReportArtifact, options: ReportOptions,
         "other_ng": options.other_ng,
         "picked_images": options.picked_images,
         "show_physical": options.show_physical,
+        "overlay_annotations": options.overlay_annotations,
         "tickets": options.tickets,
         "warnings": artifact.warnings,
         "stations": [

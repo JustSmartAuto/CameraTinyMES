@@ -38,6 +38,9 @@ from .tasks import CancelledError, TaskManager
 log = logging.getLogger(__name__)
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
+ASSETS_DIR = (Path(sys._MEIPASS) / "assets" if getattr(sys, "_MEIPASS", None)
+              else Path(__file__).resolve().parents[2] / "assets")
+APP_ICON = ASSETS_DIR / "app_icon.ico"
 MAX_BODY = 1024 * 1024
 FRAME_WINDOW = 5.0
 DEFAULT_REVIEWER = "产线工程师"
@@ -123,6 +126,35 @@ def _parse_hours(values) -> list[int]:
     for value in values or []:
         walk(value)
     return sorted(hours)
+
+
+def _icon_data_uri() -> str:
+    """应用图标的 data URI（内嵌进单文件页面）；读取失败时返回空串。"""
+    try:
+        data = APP_ICON.read_bytes()
+    except OSError as exc:
+        log.warning("读取应用图标失败：%s", exc)
+        return ""
+    return "data:image/x-icon;base64," + base64.b64encode(data).decode("ascii")
+
+
+def singlefile_page() -> bytes:
+    """把工作台的 HTML、样式、脚本与应用图标合并为一个单文件页面。
+
+    图标以 data URI 形式写入 `<link rel="icon">`，页面不再依赖任何静态子资源。
+    """
+    html = (WEBUI_DIR / "index.html").read_text(encoding="utf-8")
+    css = (WEBUI_DIR / "style.css").read_text(encoding="utf-8")
+    js = (WEBUI_DIR / "app.js").read_text(encoding="utf-8")
+    html = html.replace('<link rel="stylesheet" href="/webui/style.css">',
+                        f"<style>\n{css}\n</style>", 1)
+    html = html.replace('<script src="/webui/app.js"></script>',
+                        f"<script>\n{js}\n</script>", 1)
+    favicon = _icon_data_uri()
+    if favicon:
+        html = html.replace(
+            "<title>", f'<link rel="icon" type="image/x-icon" href="{favicon}">\n<title>', 1)
+    return html.encode("utf-8")
 
 
 class ApiError(Exception):
@@ -304,12 +336,16 @@ class ReportServer:
     def _run_generate(self, params: dict, task) -> dict:
         day = date.fromisoformat(params["date"])
         hours = params["hours"]
+        overlay = params.get("overlay_annotations")
+        if overlay is None:
+            overlay = self.cfg.overlay_annotations
         options = ReportOptions(
             day=day, hours=hours,
             reasons=params.get("reasons") or {},
             other_ng=params.get("other_ng") or {},
             picked_images=params.get("picked_images") or {},
             show_physical=bool(params.get("show_physical")),
+            overlay_annotations=bool(overlay),
             tickets={str(k): [int(v) for v in vals]
                      for k, vals in (params.get("tickets") or {}).items()},
         )
@@ -579,7 +615,8 @@ class _Handler(BaseHTTPRequestHandler):
         path = WEBUI_DIR / name
         if not path.exists():
             raise ApiError(404, "页面资源缺失")
-        self._send(status, path.read_bytes(), "text/html; charset=utf-8",
+        body = singlefile_page() if name == "index.html" else path.read_bytes()
+        self._send(status, body, "text/html; charset=utf-8",
                    {"Cache-Control": "no-store"})
 
     def _static(self, name: str) -> None:
@@ -654,7 +691,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._static(path[len("/webui/"):])
             return
         if path == "/favicon.ico":
-            self._send(200, b"", "image/x-icon")
+            try:
+                body = APP_ICON.read_bytes()
+            except OSError:
+                raise ApiError(404, "图标不存在")
+            self._send(200, body, "image/x-icon", {"Cache-Control": "max-age=86400"})
             return
         if path == "/api/dates":
             self._api_dates()
@@ -734,6 +775,7 @@ class _Handler(BaseHTTPRequestHandler):
             "ng_images_per_station": max(1, min(MAX_NG_IMAGES,
                                                 int(app.cfg.ng_images_per_station))),
             "image_max_edge": int(app.cfg.image_max_edge),
+            "overlay_annotations": bool(app.cfg.overlay_annotations),
             "cameras": cameras,
             "stations": list(groups.values()),
             "today": date.today().isoformat(),
@@ -1135,6 +1177,8 @@ class _Handler(BaseHTTPRequestHandler):
             "other_ng": body.get("other_ng") or {},
             "picked_images": body.get("picked_images") or {},
             "show_physical": bool(body.get("show_physical")),
+            "overlay_annotations": (bool(body["overlay_annotations"])
+                                    if "overlay_annotations" in body else None),
             "tickets": body.get("tickets") or {},
             "reviewer": str(body.get("reviewer") or ""),
         }

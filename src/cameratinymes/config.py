@@ -362,6 +362,7 @@ class ReportConfig:
     op_aggregate: str = "median"          # 数量聚合：median | max | first
     report_keep_days: int = 90            # 存档保留天数（0=不限）
     report_keep_count: int = 200          # 存档保留条数（0=不限）
+    overlay_annotations: bool = False     # 报告图片是否叠加人工标注框
 
 
 def report_config_path(data_dir: Path) -> Path:
@@ -387,6 +388,7 @@ def load_report_config(data_dir: Path) -> ReportConfig:
         op_aggregate=str(raw.get("op_aggregate", "median")).lower(),
         report_keep_days=max(0, int(raw.get("report_keep_days", 90))),
         report_keep_count=max(0, int(raw.get("report_keep_count", 200))),
+        overlay_annotations=bool(raw.get("overlay_annotations", False)),
     )
 
 

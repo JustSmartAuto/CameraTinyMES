@@ -15,6 +15,7 @@ const state = {
   day: '',
   hours: [],
   urlHadHours: false,
+  wantTasks: false,
   stations: [],
   current: null,
   detail: null,
@@ -124,6 +125,7 @@ async function boot() {
   wireStatic();
   const params = new URLSearchParams(location.search);
   state.urlHadHours = params.has('hours');
+  state.wantTasks = params.get('view') === 'tasks';
   try {
     const [cfg, dates] = await Promise.all([api('/api/config'), api('/api/dates')]);
     state.cfg = cfg;
@@ -170,6 +172,7 @@ function fillStatic() {
   $('#lineName').value = cfg.line_name || '';
   $('#reviewer').value = cfg.reviewer || '产线工程师';
   $('#showPhysical').checked = false;
+  $('#overlayAnnotations').checked = !!cfg.overlay_annotations;
 }
 
 function renderParams() {
@@ -686,6 +689,7 @@ function payload() {
     destination: $('#destination').value,
     line_name: $('#lineName').value,
     show_physical: $('#showPhysical').checked,
+    overlay_annotations: $('#overlayAnnotations').checked,
     reviewer: $('#reviewer').value,
   };
 }
@@ -703,6 +707,9 @@ function applyDraft(draft) {
   if (p.line_name) $('#lineName').value = p.line_name;
   if (p.reviewer) $('#reviewer').value = p.reviewer;
   $('#showPhysical').checked = !!p.show_physical;
+  if (p.overlay_annotations !== undefined) {
+    $('#overlayAnnotations').checked = !!p.overlay_annotations;
+  }
   state.draftUpdatedAt = draft.updated_at || '';
   state.lastSaved = draft.updated_at ? new Date(draft.updated_at) : null;
 }
@@ -762,6 +769,7 @@ async function generate() {
     line_name: $('#lineName').value,
     reviewer: $('#reviewer').value,
     show_physical: $('#showPhysical').checked,
+    overlay_annotations: $('#overlayAnnotations').checked,
     reasons: state.reasons,
     other_ng: state.otherNg,
     picked_images: state.picked,
@@ -798,7 +806,13 @@ function renderTasks() {
   const panel = $('#taskPanel');
   const list = $('#taskList');
   if (!state.tasks.length) {
-    panel.classList.add('hidden');
+    if (!state.wantTasks) {
+      panel.classList.add('hidden');
+      return;
+    }
+    panel.classList.remove('hidden');
+    $('#taskBadge').textContent = '0';
+    list.innerHTML = '<div class="hint" style="padding:12px">暂无后台任务</div>';
     return;
   }
   panel.classList.remove('hidden');

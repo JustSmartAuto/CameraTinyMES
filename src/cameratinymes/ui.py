@@ -487,6 +487,10 @@ class MonitorApp:
         data_menu.add_separator()
         data_menu.add_command(label="生成改善报告…", command=self.open_report_workbench)
         menubar.add_cascade(label="数据", menu=data_menu)
+        web_menu = tk.Menu(menubar, tearoff=0)
+        web_menu.add_command(label="任务进度页…", command=self.open_web_backend)
+        web_menu.add_command(label="复制访问地址", command=self.copy_web_backend_url)
+        menubar.add_cascade(label="网页后台", menu=web_menu)
         sys_menu = tk.Menu(menubar, tearoff=0)
         sys_menu.add_command(label="设置…", command=self.show_settings)
         sys_menu.add_separator()
@@ -946,6 +950,33 @@ class MonitorApp:
         urls = self._report_server.urls(date.fromisoformat(day_text), hours)
         webbrowser.open(urls["local"])
         self._log(f"打开改善报告工作台：{urls['local']}")
+
+    def open_web_backend(self) -> None:
+        """在浏览器打开网页后台的任务进度页（服务未启动则先启动）。"""
+        if self._report_server is None:
+            self._start_report_server()
+        if self._report_server is None:
+            messagebox.showerror("网页后台", "网页后台服务未启动，请检查日志或端口占用。",
+                                 parent=self.root)
+            return
+        self._report_server.cameras = list(self.cameras)
+        url = f"http://127.0.0.1:{self._report_server.port}/?view=tasks"
+        webbrowser.open(url)
+        self._log(f"打开网页后台任务进度：{url}")
+
+    def copy_web_backend_url(self) -> None:
+        """复制网页后台访问地址（优先局域网，便于工控机/手机查看进度）。"""
+        if self._report_server is None:
+            self._start_report_server()
+        if self._report_server is None:
+            messagebox.showerror("网页后台", "网页后台服务未启动，请检查日志或端口占用。",
+                                 parent=self.root)
+            return
+        urls = self._report_server.urls()
+        url = urls["lan"] or urls["local"]
+        self.clipboard_clear()
+        self.clipboard_append(url)
+        self._log(f"已复制网页后台地址：{url}")
 
     def _open_entry_from_web(self, day_text: str, hours: list[int]) -> None:
         """网页点「重新选择」→ 在 Tk 主线程弹出同一入口对话框，结果回传网页。"""
