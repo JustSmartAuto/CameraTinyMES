@@ -117,12 +117,15 @@ def _cell_image_url(hmi_result: dict, cell_name: str) -> str | None:
     return None
 
 
-def resolve_sources(hmi_result: dict, cell_name: str) -> dict[str, str]:
-    """返回 {kind: url}：image=原始图；svg/graphics=结果图形（仅 A0）。
+def resolve_sources(hmi_result: dict, cell_name: str,
+                    with_render: bool | None = None) -> dict[str, str]:
+    """返回 {kind: url}：image=原始图；svg/graphics=结果图形。
 
     svg 为相机生成的 SVG 图层（与 HMI 显示一致，优先使用）；
     graphics 为图形 JSON 数组（SVG 缺失或下载失败时兜底）。
+    `with_render` 为 None 时按旧规则仅 A0 取结果图形，否则按相机图片单元格配置决定。
     """
+    render = is_a0(cell_name) if with_render is None else bool(with_render)
     raw = _cell_image_url(hmi_result, cell_name)
     if not raw:
         urls = _layer_urls(hmi_result, "ImageLayer")
@@ -130,7 +133,7 @@ def resolve_sources(hmi_result: dict, cell_name: str) -> dict[str, str]:
     out: dict[str, str] = {}
     if raw:
         out["image"] = raw
-    if is_a0(cell_name):
+    if render:
         urls = _layer_urls(hmi_result, "SVGLayer")
         if urls:
             out["svg"] = urls[0]

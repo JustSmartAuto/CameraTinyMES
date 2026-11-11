@@ -70,11 +70,26 @@ def _ranges_where(ranges: list[tuple[str, str]] | None,
     return clause, tuple(v for r in ranges for v in r)
 
 
-# 结果单元格判定：优先 samples.ok；历史数据与文本结果（C11 返回 "OK"/"NG"）未写 ok，
-# 按 text 兜底，避免结果统计全空。
-_RESULT_STATUS = ("CASE WHEN ok IS NOT NULL THEN ok"
-                  " WHEN UPPER(TRIM(text))='OK' THEN 1"
-                  " WHEN UPPER(TRIM(text))='NG' THEN 0 END")
+# 结果单元格判定：优先 samples.ok；历史数据与文本结果未写 ok 时，按配置的通过/不通过文本兜底
+DEFAULT_PASS_VALUES = ("OK",)
+DEFAULT_FAIL_VALUES = ("NG",)
+
+
+def _result_status(pass_values=DEFAULT_PASS_VALUES,
+                   fail_values=DEFAULT_FAIL_VALUES) -> tuple[str, tuple]:
+    """生成判定状态 SQL 表达式（1=OK，0=NG，NULL=未判定）及对应参数。"""
+    parts = ["CASE WHEN ok IS NOT NULL THEN ok"]
+    args: list[str] = []
+    fails = tuple(fail_values or ())
+    passes = tuple(pass_values or ())
+    if fails:
+        parts.append(f" WHEN UPPER(TRIM(text)) IN ({', '.join(['?'] * len(fails))}) THEN 0")
+        args.extend(fails)
+    if passes:
+        parts.append(f" WHEN UPPER(TRIM(text)) IN ({', '.join(['?'] * len(passes))}) THEN 1")
+        args.extend(passes)
+    parts.append(" END")
+    return "".join(parts), tuple(args)
 
 
 _REPORT_COLUMNS = (
@@ -1196,40 +1211,69 @@ class StorageBase:
     # ---------- 改善报告：区间聚合 ----------
 
     def range_cell_summary(self, cell: str,
-                           ranges: list[tuple[str, str]] | None) -> list[tuple]:
+                           ranges: list[tuple[str, str]] | None,
+                           pass_values=DEFAULT_PASS_VALUES,
+                           fail_values=DEFAULT_FAIL_VALUES) -> list[tuple]:
         """各相机在时段内的结果计数：camera, cell, 总数, OK, NG, 首末时间。"""
+        expr, token_args = _result_status(pass_values, fail_values)
+        clause, args = _ranges_where(ranges)
+        inner = f"SELECT camera, cell, ts, {expr} AS status FROM samples WHERE cell=?"
+        if clause:
+            inner += " AND " + clause
         sql = ("SELECT camera, cell, COUNT(*),"
-               f" COALESCE(SUM(CASE WHEN {_RESULT_STATUS}=1 THEN 1 ELSE 0 END), 0),"
-               f" COALESCE(SUM(CASE WHEN {_RESULT_STATUS}=0 THEN 1 ELSE 0 END), 0),"
+               " COALESCE(SUM(CASE WHEN status=1 THEN 1 ELSE 0 END), 0),"
+               " COALESCE(SUM(CASE WHEN status=0 THEN 1 ELSE 0 END), 0),"
+               f" MIN(ts), MAX(ts) FROM ({inner}) t WHERE status IS NOT NULL"
+               " GROUP BY camera, cell ORDER BY camera")
+        return self._fetchall(sql, token_args + (cell,) + args)
+
+    def range_result_summary(self, camera: str, cell: str,
+                             ranges: list[tuple[str, str]] | None,
+                             pass_values=DEFAULT_PASS_VALUES,
+                             fail_values=DEFAULT_FAIL_VALUES) -> tuple | None:
+        """单台相机在时段内的结果计数行：camera, cell, 总数, OK, NG, 首末时间。"""
+        expr, token_args = _result_status(pass_values, fail_values)
+        sql = ("SELECT camera, cell, COUNT(*),"
+               " COALESCE(SUM(CASE WHEN status=1 THEN 1 ELSE 0 END), 0),"
+               " COALESCE(SUM(CASE WHEN status=0 THEN 1 ELSE 0 END), 0),"
                " MIN(ts), MAX(ts)"
-               " FROM samples WHERE cell=?")
+               f" FROM (SELECT camera, cell, ts, {expr} AS status FROM samples"
+               " WHERE camera=? AND cell=?")
         clause, args = _ranges_where(ranges)
         if clause:
             sql += " AND " + clause
-        sql += " GROUP BY camera, cell ORDER BY camera"
-        return self._fetchall(sql, (cell,) + args)
+        sql += ") t WHERE status IS NOT NULL GROUP BY camera, cell"
+        rows = self._fetchall(sql, token_args + (camera, cell) + args)
+        return rows[0] if rows else None
 
     def range_ng_timestamps(self, camera: str, cell: str,
-                            ranges: list[tuple[str, str]] | None) -> list[str]:
+                            ranges: list[tuple[str, str]] | None,
+                            pass_values=DEFAULT_PASS_VALUES,
+                            fail_values=DEFAULT_FAIL_VALUES) -> list[str]:
         """该相机在时段内所有 NG 的 ts（升序），用于抽图与打 tag。"""
-        sql = f"SELECT ts FROM samples WHERE camera=? AND cell=? AND {_RESULT_STATUS}=0"
+        expr, token_args = _result_status(pass_values, fail_values)
+        sql = f"SELECT ts FROM samples WHERE camera=? AND cell=? AND {expr}=0"
         clause, args = _ranges_where(ranges)
         if clause:
             sql += " AND " + clause
         sql += " ORDER BY ts"
-        return [str(row[0]) for row in self._fetchall(sql, (camera, cell) + args)]
+        return [str(row[0]) for row in
+                self._fetchall(sql, (camera, cell) + token_args + args)]
 
     def range_ok_timestamps(self, camera: str, cell: str,
                             ranges: list[tuple[str, str]] | None,
-                            limit: int = 2000) -> list[str]:
+                            limit: int = 2000,
+                            pass_values=DEFAULT_PASS_VALUES,
+                            fail_values=DEFAULT_FAIL_VALUES) -> list[str]:
         """该相机在时段内 OK 的 ts（升序，最多 limit 条），用于选 OK 参考图。"""
-        sql = f"SELECT ts FROM samples WHERE camera=? AND cell=? AND {_RESULT_STATUS}=1"
+        expr, token_args = _result_status(pass_values, fail_values)
+        sql = f"SELECT ts FROM samples WHERE camera=? AND cell=? AND {expr}=1"
         clause, args = _ranges_where(ranges)
         if clause:
             sql += " AND " + clause
         sql += " ORDER BY ts LIMIT ?"
         return [str(row[0]) for row in
-                self._fetchall(sql, (camera, cell) + args + (int(limit),))]
+                self._fetchall(sql, (camera, cell) + token_args + args + (int(limit),))]
 
     def range_jobs(self, camera: str,
                    ranges: list[tuple[str, str]] | None) -> list[tuple[str, int]]:
@@ -1249,17 +1293,35 @@ class StorageBase:
             " WHERE cell=? ORDER BY d DESC LIMIT ?", (cell, int(limit)))
         return [str(row[0]) for row in rows if row[0]]
 
-    def ng_hours(self, day: str, cell: str = "C11") -> list[int]:
+    def days_with_results_specs(self, cells: list[str], limit: int = 120) -> list[str]:
+        """多台相机结果单元格的日期并集（倒序），用于按相机配置取日期下拉。"""
+        days: set[str] = set()
+        for cell in dict.fromkeys(cells):
+            days.update(self.days_with_results(cell, limit))
+        return sorted(days, reverse=True)[:limit]
+
+    def ng_hours(self, day: str, cell: str = "C11",
+                 pass_values=DEFAULT_PASS_VALUES,
+                 fail_values=DEFAULT_FAIL_VALUES) -> list[int]:
         """某天存在 NG 的小时（0~23），用于「仅NG时段」快捷勾选。"""
         start = f"{day}T00:00:00.000"
         end = (datetime.fromisoformat(day) + timedelta(days=1)).isoformat(
             timespec="milliseconds")
+        expr, token_args = _result_status(pass_values, fail_values)
         rows = self._fetchall(
             "SELECT DISTINCT substr(ts, 12, 2) FROM samples"
-            f" WHERE cell=? AND {_RESULT_STATUS}=0 AND ts>=? AND ts<?",
-            (cell, start, end))
+            f" WHERE cell=? AND {expr}=0 AND ts>=? AND ts<?",
+            (cell,) + token_args + (start, end))
         return sorted({int(str(row[0])[:2]) for row in rows
                        if str(row[0])[:2].isdigit()})
+
+    def ng_hours_specs(self, day: str,
+                       specs: list[tuple[str, tuple[str, ...], tuple[str, ...]]]) -> list[int]:
+        """按（单元格, 通过值, 不通过值）规则求某天 NG 小时并集。"""
+        hours: set[int] = set()
+        for cell, pass_values, fail_values in specs:
+            hours.update(self.ng_hours(day, cell, pass_values, fail_values))
+        return sorted(hours)
 
     # ---------- 改善报告：存档 ----------
 

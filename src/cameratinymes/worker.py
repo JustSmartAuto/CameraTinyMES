@@ -12,7 +12,7 @@ import queue
 from datetime import datetime
 
 from .cogsocket import CogSocketClient, CogSocketError, parse_cells
-from .config import CameraConfig, CellConfig
+from .config import CameraConfig, CellConfig, image_cell
 from .images import (cell_is_image, compose_render, fetch_image, fetch_json,
                      fetch_text, image_source_size, resolve_sources, scaled_url,
                      to_jpeg, view_size)
@@ -168,7 +168,7 @@ class CameraWorker:
                                      ", ".join(detected))
 
                     for cell in event_cells:
-                        if cell.is_image or cell.name in detected:
+                        if cell.is_image or cell.role == "image" or cell.name in detected:
                             self._store_image(ts, cell, hmi_result)
                             continue
                         if cell.name in values:
@@ -263,8 +263,10 @@ class CameraWorker:
 
     def _store_image(self, ts: datetime, cell: CellConfig, hmi_result: dict) -> None:
         """解析图像地址并异步下载落库（下载不阻塞事件循环与其他相机）。"""
+        target = image_cell(self.cfg)
+        with_render = target is not None and target.name == cell.name
         try:
-            sources = resolve_sources(hmi_result, cell.name)
+            sources = resolve_sources(hmi_result, cell.name, with_render=with_render)
             size = image_source_size(hmi_result)
             viewport = view_size(hmi_result)
         except Exception as exc:

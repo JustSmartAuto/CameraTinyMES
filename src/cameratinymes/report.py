@@ -16,12 +16,14 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from .config import CameraConfig, ReportConfig
+from .config import (
+    DEFAULT_IMAGE_CELL, CameraConfig, ReportConfig, extra_result_cells, image_cell,
+    result_cell, result_tokens,
+)
 
 log = logging.getLogger(__name__)
 
 # ---------- 版面常量（对齐客户模板 SAB视觉端NG原因分析）----------
-RESULT_CELL = "C11"
 NG_IMAGE_COLUMNS = 12           # M..X
 COLUMNS: tuple[tuple[str, float, bool], ...] = (
     ("A", 2.5, True),
@@ -235,14 +237,14 @@ def _aggregate(values: list[int], mode: str) -> int:
 
 def collect_stats(storage, cameras: list[CameraConfig], options: ReportOptions,
                   config: ReportConfig) -> ReportStats:
-    """按小时区间聚合 C11 结果与 tag，得到逐站/逐相机统计。"""
+    """按小时区间聚合结果单元格与 tag，得到逐站/逐相机统计。"""
     ranges = hour_ranges(options.day, options.hours)
     iso = ranges_iso(ranges)
     day_text = options.day.isoformat()
     enabled = [c for c in cameras if c.enabled and (not options.cameras or c.name in options.cameras)]
     stats = ReportStats(day=options.day, hours=sorted(set(int(h) for h in options.hours)))
 
-    rows = {str(row[0]): row for row in storage.range_cell_summary(RESULT_CELL, iso)}
+    rows: dict[str, tuple] = {}
     tag_map = storage.list_report_tags(day_text)
 
     groups: dict[tuple[str, str], StationStat] = {}
@@ -250,16 +252,25 @@ def collect_stats(storage, cameras: list[CameraConfig], options: ReportOptions,
         station, station_name = station_of(camera)
         block = groups.setdefault((station, station_name),
                                   StationStat(station=station, station_name=station_name))
-        row = rows.get(camera.name)
         cam = CameraStat(camera=camera.name)
+        cell = result_cell(camera)
+        passes, fails = result_tokens(cell) if cell else ((), ())
+        row = (storage.range_result_summary(camera.name, cell.name, iso, passes, fails)
+               if cell else None)
+        if row:
+            rows[camera.name] = row
+        if cell and extra_result_cells(camera):
+            stats.warnings.append(f"{camera.name} 配置了多个结果单元格，仅使用 {cell.name}")
         if row:
             cam.total, cam.ok, cam.ng = int(row[2] or 0), int(row[3] or 0), int(row[4] or 0)
             cam.first, cam.last = str(row[5] or ""), str(row[6] or "")
-            cam.ng_times = storage.range_ng_timestamps(camera.name, RESULT_CELL, iso)
+            cam.ng_times = storage.range_ng_timestamps(camera.name, cell.name, iso, passes, fails)
             cam.jobs = [job for job, _ in storage.range_jobs(camera.name, iso)]
             cam.tags = storage.range_tag_counts(camera.name, iso)
-        else:
+        elif cell:
             stats.warnings.append(f"{camera.name} 在所选时段内无记录")
+        else:
+            stats.warnings.append(f"{camera.name} 未配置结果单元格，已跳过统计")
         ng_set = set(cam.ng_times)
         picked = [ts for ts in options.picked_images.get(camera.name, [])
                   if ts and ts in ng_set]
@@ -330,12 +341,7 @@ def auto_reason(cam: CameraStat, camera: CameraConfig | None,
 
 
 def _result_cell(camera: CameraConfig | None):
-    if camera is None:
-        return None
-    for cell in camera.cells:
-        if (cell.name or "").strip().upper().replace("$", "") == RESULT_CELL:
-            return cell
-    return None
+    return result_cell(camera) if camera is not None else None
 
 
 def _hhmm(ts: str) -> str:
@@ -671,7 +677,7 @@ def pdf_filename(stem: str, day: date) -> str:
 
 # ---------- 报告生成（内存产物，不写库/不落盘）----------
 
-IMAGE_CELL = "A0"
+IMAGE_CELL = DEFAULT_IMAGE_CELL  # 默认图片单元格，仅作兜底
 FILENAME_STEM = "视觉改善分析报告"
 
 
@@ -700,6 +706,13 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
     now = datetime.now()
     warnings: list[str] = []
 
+    camera_map = {c.name: c for c in cameras}
+
+    def image_name(camera: str) -> str:
+        cfg = camera_map.get(camera)
+        cell = image_cell(cfg) if cfg is not None else None
+        return cell.name if cell is not None else IMAGE_CELL
+
     tick("stats", 0, 1, "统计结果数据")
     stats = collect_stats(storage, cameras, options, config)
     warnings.extend(stats.warnings)
@@ -725,7 +738,8 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
             picks = cam.picked[:limit]
             if not picks:
                 continue
-            images = _load_ng_images(storage, cam.camera, picks, config, warnings)
+            images = _load_ng_images(storage, cam.camera, picks, config, warnings,
+                                     image_name(cam.camera))
             for index, ts in enumerate(picks):
                 done += 1
                 tick("images", done, total_pics, f"取图 {done}/{total_pics}")
@@ -746,11 +760,18 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
         for cam in block.cameras:
             if cam.ok <= 0:
                 continue
-            ok_times = storage.range_ok_timestamps(cam.camera, RESULT_CELL, iso)
+            camera_cfg = camera_map.get(cam.camera)
+            result = result_cell(camera_cfg) if camera_cfg is not None else None
+            if result is None:
+                continue
+            passes, fails = result_tokens(result)
+            ok_times = storage.range_ok_timestamps(
+                cam.camera, result.name, iso, pass_values=passes, fail_values=fails)
             if not ok_times:
                 continue
             ok_ts = ok_times[len(ok_times) // 2]
-            data = _load_frame(storage, cam.camera, ok_ts, config, warnings)
+            data = _load_frame(storage, cam.camera, ok_ts, config, warnings,
+                               image_name(cam.camera))
             ok_count += 1
             if ok_count % 3 == 0:
                 check()
@@ -807,10 +828,10 @@ FRAME_WINDOW = 5.0         # NG 事件与证据帧的最大时差（秒）
 
 
 def _load_ng_images(storage, camera: str, picks: list[str], config: ReportConfig,
-                    warnings: list[str]) -> dict[str, bytes]:
+                    warnings: list[str], image_cell_name: str = IMAGE_CELL) -> dict[str, bytes]:
     """按时间戳取 NG 渲染图（缺失回退原图），返回 ts → JPEG 字节。
 
-    证据帧按 §4.5：取 `|frame_ts - event_ts|` 最小且 ≤ 5s 的 A0 帧，同一帧只用一次。
+    证据帧按 §4.5：取 `|frame_ts - event_ts|` 最小且 ≤ 5s 的图片单元格帧，同一帧只用一次。
     """
     try:
         start = datetime.fromisoformat(picks[0]) - timedelta(seconds=FRAME_WINDOW)
@@ -820,7 +841,7 @@ def _load_ng_images(storage, camera: str, picks: list[str], config: ReportConfig
     try:
         from .videocodec import load_images
 
-        rows = load_images(storage, camera, IMAGE_CELL, start=start, end=end)
+        rows = load_images(storage, camera, image_cell_name, start=start, end=end)
     except Exception as exc:
         log.warning("读取 %s 图像失败：%s", camera, exc)
         warnings.append(f"{camera} 图像读取失败：{exc}")
@@ -870,7 +891,7 @@ def _nearest_frame(frames: list[tuple[datetime, str, bytes]], center: datetime,
 
 
 def _load_frame(storage, camera: str, ts: str, config: ReportConfig,
-                warnings: list[str]) -> bytes | None:
+                warnings: list[str], image_cell_name: str = IMAGE_CELL) -> bytes | None:
     """取该时刻最近的一帧（渲染图优先），优先 ±5s，其次逐级放宽窗口。"""
     from . import images as image_mod
 
@@ -882,7 +903,7 @@ def _load_frame(storage, camera: str, ts: str, config: ReportConfig,
         try:
             from .videocodec import load_images
 
-            rows = load_images(storage, camera, IMAGE_CELL,
+            rows = load_images(storage, camera, image_cell_name,
                                start=center - timedelta(seconds=window),
                                end=center + timedelta(seconds=window))
         except Exception as exc:

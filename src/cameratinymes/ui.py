@@ -20,7 +20,8 @@ from . import charts, stats, theme
 from .config import (
     AppSettings,
     CameraConfig, CellConfig,
-    CELL_DATA_TYPES, NUMERIC_DATA_TYPES, CELL_RECORD_MODES,
+    CELL_DATA_TYPES, CELL_RECORD_MODES, CELL_ROLES, NUMERIC_DATA_TYPES,
+    result_specs,
     save_config, save_settings,
 )
 from .storage import export_xlsx, timestamp_suffix, open_storage
@@ -205,11 +206,13 @@ class ReportEntryDialog(_IconToplevel):
         self._storage = storage
         self._cameras = cameras
         self._urls = url_provider
+        self._specs = result_specs([c for c in cameras if c.enabled])
         self.configure(bg=C["chrome"])
         self.maxsize(780, 560)
         theme.title_tab(self, "生成改善分析报告")
 
-        dates = [str(d) for d in storage.days_with_results("C11", limit=365)]
+        cells = [cell.name for _cam, cell, _passes, _fails in self._specs]
+        dates = [str(d) for d in storage.days_with_results_specs(cells, limit=365)]
         today = date.today().isoformat()
         if today not in dates:
             dates.insert(0, today)
@@ -318,7 +321,10 @@ class ReportEntryDialog(_IconToplevel):
 
     def _select_ng(self) -> None:
         try:
-            ng_hours = set(int(h) for h in self._storage.ng_hours(self._day_var.get()))
+            specs = [(cell.name, passes, fails)
+                     for _cam, cell, passes, fails in self._specs]
+            ng_hours = set(int(h) for h in
+                           self._storage.ng_hours_specs(self._day_var.get(), specs))
         except Exception:
             ng_hours = set()
         if not ng_hours:
@@ -1032,16 +1038,20 @@ class MonitorApp:
 
 
 # ---------- 单元格文本格式 ----------
-# 名称,数据类型,记录模式,event|poll,轮询间隔秒,下限,上限,单位,注解
+# 名称,数据类型,记录模式,event|poll,轮询间隔秒,下限,上限,单位,用途,通过值,不通过值,注解
 _CELL_TEXT_HINT = (
-    "每行一个单元格：名称,数据类型,记录模式,event|poll,轮询间隔秒,下限,上限,单位,注解\n"
+    "每行一个单元格：名称,数据类型,记录模式,event|poll,轮询间隔秒,下限,上限,单位,"
+    "用途,通过值,不通过值,注解\n"
     "数据类型：auto（未知·运行时推断）/ int / float / string / bool / image（图像）/ other\n"
     "记录模式：simple（仅记录·不判定）/ advanced（记录+阈值判定）\n"
+    "用途：auto（按名称推断）/ data（普通数据）/ result（判定结果）/ image（报告图片）\n"
     "上下限仅对 advanced + int/float/auto 有效；simple 模式忽略阈值\n"
-    "image 类型：从相机下载图像，按 AV1 帧序列分片入库并嵌入 xlsx；无 ffmpeg 时回退逐张 BLOB；A0 另外保存结果渲染图\n"
-    "示例：C36,float,advanced,event,0,175,182,mm,焊缝宽度\n"
-    "      A0,image,simple,event,0,,,,,\n"
-    "      Status,string,simple,event,0,,,,,判定结果"
+    "通过值/不通过值仅用途为 result 时生效，多个值用 / 分隔（默认 OK / NG）\n"
+    "image 类型：从相机下载图像，按 AV1 帧序列分片入库并嵌入 xlsx；无 ffmpeg 时回退逐张 BLOB；"
+    "报告图片单元格另外保存结果渲染图\n"
+    "示例：C36,float,advanced,event,0,175,182,mm,data,,,焊缝宽度\n"
+    "      A0,image,simple,event,0,,,,image,,,\n"
+    "      G24,auto,simple,event,0,,,,result,OK,NG,判定结果"
 )
 
 
@@ -1053,7 +1063,9 @@ def _cells_to_text(cells: list[CellConfig]) -> str:
             f"{c.poll_interval:g}",
             "" if c.lower is None else f"{c.lower:g}",
             "" if c.upper is None else f"{c.upper:g}",
-            c.unit, c.note,
+            c.unit, c.role,
+            " / ".join(c.pass_values), " / ".join(c.fail_values),
+            c.note,
         ]))
     return "\n".join(lines)
 
@@ -1096,6 +1108,30 @@ def _text_to_cells(text: str) -> list[CellConfig]:
             lower, upper = num(4), num(5)
             unit = parts[6] if len(parts) > 6 else ""
             note = ",".join(parts[7:]) if len(parts) > 7 else ""
+        # v4 新格式：名称,数据类型,记录模式,采样模式,间隔,下限,上限,单位,用途,通过值,不通过值,注解
+        elif (len(parts) > 8 and parts[8] in CELL_ROLES):
+            data_type = parts[1] if parts[1] else "auto"
+            if data_type not in CELL_DATA_TYPES:
+                data_type = "auto"
+            record_mode = parts[2] if parts[2] else "simple"
+            if record_mode not in CELL_RECORD_MODES:
+                record_mode = "simple"
+            mode = parts[3] if parts[3] else "event"
+            if mode not in ("event", "poll"):
+                mode = "event"
+            interval = num(4) or 1.0
+            lower, upper = num(5), num(6)
+            unit = parts[7]
+            role = parts[8]
+            passes = _split_tokens(parts[9] if len(parts) > 9 else "")
+            fails = _split_tokens(parts[10] if len(parts) > 10 else "")
+            note = ",".join(parts[11:]) if len(parts) > 11 else ""
+            cells.append(CellConfig(name=name, data_type=data_type,
+                                    record_mode=record_mode, sample_mode=mode,
+                                    poll_interval=interval, lower=lower, upper=upper,
+                                    unit=unit, note=note, role=role,
+                                    pass_values=passes, fail_values=fails))
+            continue
         # v3 新格式：名称,数据类型,记录模式,采样模式,...
         else:
             data_type = parts[1] if len(parts) > 1 and parts[1] else "auto"
@@ -1116,6 +1152,45 @@ def _text_to_cells(text: str) -> list[CellConfig]:
                                 sample_mode=mode, poll_interval=interval,
                                 lower=lower, upper=upper, unit=unit, note=note))
     return cells
+
+
+# 单元格用途：界面显示中文，配置仍存英文枚举
+_ROLE_LABELS = {
+    "auto": "自动（按名称推断）",
+    "data": "普通数据",
+    "result": "判定结果（OK/NG）",
+    "image": "报告图片",
+}
+
+
+def _role_label(role: str) -> str:
+    return _ROLE_LABELS.get(role, _ROLE_LABELS["auto"])
+
+
+# 表格中的短标签
+_ROLE_SHORT = {
+    "auto": "自动",
+    "data": "数据",
+    "result": "判定结果",
+    "image": "报告图片",
+}
+
+
+def _role_value(label: str) -> str:
+    for role, text in _ROLE_LABELS.items():
+        if text == label:
+            return role
+    return label if label in CELL_ROLES else "auto"
+
+
+def _split_tokens(text: str) -> list[str]:
+    """把 "OK / GOOD" 之类的输入拆成大写去重列表。"""
+    tokens: list[str] = []
+    for part in str(text or "").replace("、", "/").replace("|", "/").split("/"):
+        token = part.strip().upper()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
 
 
 class CellFormDialog(_IconToplevel):
@@ -1144,6 +1219,9 @@ class CellFormDialog(_IconToplevel):
         self._upper_var = tk.StringVar(value="" if cell.upper is None else f"{cell.upper:g}")
         self._unit_var = tk.StringVar(value=cell.unit)
         self._note_var = tk.StringVar(value=cell.note)
+        self._role_var = tk.StringVar(value=_role_label(cell.role))
+        self._pass_var = tk.StringVar(value=" / ".join(cell.pass_values))
+        self._fail_var = tk.StringVar(value=" / ".join(cell.fail_values))
 
         def row(r, label, widget):
             tk.Label(body, text=label, bg=C["chrome"], fg=C["ink"],
@@ -1183,9 +1261,21 @@ class CellFormDialog(_IconToplevel):
         self._note_entry = tk.Entry(body, textvariable=self._note_var, width=30)
         row(8, "注解", self._note_entry)
 
+        self._role_combo = ttk.Combobox(body, textvariable=self._role_var, width=28,
+                                        values=[_ROLE_LABELS[r] for r in CELL_ROLES],
+                                        state="readonly")
+        self._role_combo.bind("<<ComboboxSelected>>", lambda e: self._update_role_state())
+        row(9, "用途", self._role_combo)
+
+        self._pass_entry = tk.Entry(body, textvariable=self._pass_var, width=30)
+        row(10, "通过值", self._pass_entry)
+
+        self._fail_entry = tk.Entry(body, textvariable=self._fail_var, width=30)
+        row(11, "不通过值", self._fail_entry)
+
         self._hint_label = tk.Label(body, text="", bg=C["chrome"], fg=C["teal"],
                                     font=theme.FONT, justify="left", wraplength=320)
-        self._hint_label.grid(row=9, column=0, columnspan=2, sticky="w", padx=4, pady=(6, 0))
+        self._hint_label.grid(row=12, column=0, columnspan=2, sticky="w", padx=4, pady=(6, 0))
 
         body.columnconfigure(1, weight=1)
 
@@ -1195,6 +1285,7 @@ class CellFormDialog(_IconToplevel):
         theme.beos_button(btns, "取消", self.destroy).pack(side="left", padx=4)
 
         self._update_limit_state()
+        self._update_role_state()
         self._on_mode_change()
 
         self.grab_set()
@@ -1214,7 +1305,8 @@ class CellFormDialog(_IconToplevel):
                 fg=C["teal"])
         elif self._type_var.get() == "image":
             self._hint_label.config(
-                text="图像类型：从相机下载图像存入数据库并嵌入 xlsx；A0 另外保存结果渲染图。",
+                text="图像类型：从相机下载图像存入数据库并嵌入 xlsx；"
+                     "报告图片单元格另外保存结果渲染图。",
                 fg=C["teal"])
         elif numeric:
             self._hint_label.config(
@@ -1224,6 +1316,19 @@ class CellFormDialog(_IconToplevel):
             self._hint_label.config(
                 text=f"高级模式·非数值类型（{self._type_var.get()}）：上下限不生效，判定结果为 NULL。",
                 fg=C["red_dot"])
+
+    def _update_role_state(self) -> None:
+        """按用途联动：图像用途强制 image 类型，仅判定结果用途可编辑通过/不通过值。"""
+        role = _role_value(self._role_var.get())
+        if role == "image" and self._type_var.get() != "image":
+            self._type_var.set("image")
+            self._update_limit_state()
+        result = role == "result"
+        for ent in (self._pass_entry, self._fail_entry):
+            ent.config(state="normal" if result else "disabled")
+        if result and not self._pass_var.get().strip() and not self._fail_var.get().strip():
+            self._pass_var.set("OK")
+            self._fail_var.set("NG")
 
     def _on_mode_change(self) -> None:
         poll = self._mode_var.get() == "poll"
@@ -1252,15 +1357,34 @@ class CellFormDialog(_IconToplevel):
         simple = self._record_var.get() == "simple"
         lower = None if simple else parse_num(self._lower_var)
         upper = None if simple else parse_num(self._upper_var)
+        role = _role_value(self._role_var.get())
+        passes = _split_tokens(self._pass_var.get())
+        fails = _split_tokens(self._fail_var.get())
+        if role == "result":
+            if not passes or not fails:
+                messagebox.showerror("错误", "判定结果单元格必须填写通过值与不通过值，"
+                                             "多个值用 / 分隔（如 OK / GOOD）。", parent=self)
+                return
+            common = sorted(set(passes) & set(fails))
+            if common:
+                messagebox.showerror("错误", "通过值与不通过值不能重复："
+                                             + "、".join(common), parent=self)
+                return
+        data_type = self._type_var.get()
+        if role == "image":
+            data_type = "image"
         self.result = CellConfig(
             name=name,
-            data_type=self._type_var.get(),
+            data_type=data_type,
             record_mode=self._record_var.get(),
             sample_mode=self._mode_var.get(),
             poll_interval=interval,
             lower=lower, upper=upper,
             unit=self._unit_var.get().strip(),
             note=self._note_var.get().strip(),
+            role=role,
+            pass_values=passes,
+            fail_values=fails,
         )
         self.destroy()
 
@@ -1551,9 +1675,11 @@ class ChartCellSelectDialog(_IconToplevel):
 class CellEditorDialog(_IconToplevel):
     """交互式单元格编辑器：表格 + 增删改 + 文本编辑回退。"""
 
-    COLUMNS = ("name", "type", "record", "mode", "interval", "lower", "upper", "unit", "note")
-    HEADINGS = ("名称", "类型", "记录", "模式", "间隔", "下限", "上限", "单位", "注解")
-    WIDTHS = (100, 60, 60, 55, 55, 65, 65, 45, 130)
+    COLUMNS = ("name", "role", "type", "record", "mode", "interval",
+               "lower", "upper", "unit", "pass", "fail", "note")
+    HEADINGS = ("名称", "用途", "类型", "记录", "模式", "间隔",
+                "下限", "上限", "单位", "通过值", "不通过值", "注解")
+    WIDTHS = (95, 60, 55, 55, 50, 50, 55, 55, 45, 60, 65, 110)
 
     def __init__(self, parent, cells: list[CellConfig]):
         super().__init__(parent)
@@ -1603,10 +1729,11 @@ class CellEditorDialog(_IconToplevel):
             self._tree.delete(item)
         for c in self._cells:
             self._tree.insert("", "end", values=(
-                c.name, c.data_type, c.record_mode, c.sample_mode, f"{c.poll_interval:g}",
+                c.name, _ROLE_SHORT.get(c.role, _ROLE_SHORT["auto"]),
+                c.data_type, c.record_mode, c.sample_mode, f"{c.poll_interval:g}",
                 "" if c.lower is None else f"{c.lower:g}",
                 "" if c.upper is None else f"{c.upper:g}",
-                c.unit, c.note,
+                c.unit, " / ".join(c.pass_values), " / ".join(c.fail_values), c.note,
             ))
         theme.title_tab(self, "订阅单元格", f"{len(self._cells)} 个")
 

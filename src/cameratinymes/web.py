@@ -23,8 +23,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from .config import AppSettings, CameraConfig, ReportConfig, save_settings
-from .report import (IMAGE_CELL, MAX_NG_IMAGES, RESULT_CELL, CameraStat, ReportOptions,
+from .config import (AppSettings, CameraConfig, DEFAULT_IMAGE_CELL, ReportConfig,
+                     image_cell, result_cell, result_specs, result_tokens,
+                     save_settings)
+from .report import (MAX_NG_IMAGES, CameraStat, ReportOptions,
                      auto_pick, auto_reason, collect_stats, hour_ranges, ranges_iso,
                      station_of)
 from .reportstore import (export_report_to_disk, list_reports, load_report_bytes,
@@ -85,11 +87,23 @@ def default_hours(day: date) -> list[int]:
 
 
 def _camera_note(camera: CameraConfig) -> str:
-    for cell in camera.cells:
-        name = (cell.name or "").strip().upper().replace("$", "")
-        if name == RESULT_CELL:
-            return (cell.note or "").strip()
-    return ""
+    cell = result_cell(camera)
+    return (cell.note or "").strip() if cell is not None else ""
+
+
+def _image_cell_name(camera: CameraConfig | None) -> str:
+    """相机的报告图片单元格，未配置时回退 A0。"""
+    cell = image_cell(camera) if camera is not None else None
+    return cell.name if cell is not None else DEFAULT_IMAGE_CELL
+
+
+def _result_rule(camera: CameraConfig | None):
+    """相机的（结果单元格, 通过值, 不通过值），未配置结果单元格时返回 None。"""
+    cell = result_cell(camera) if camera is not None else None
+    if cell is None:
+        return None
+    passes, fails = result_tokens(cell)
+    return cell, passes, fails
 
 
 def _parse_hours(values) -> list[int]:
@@ -367,6 +381,13 @@ class ReportServer:
 
     # ---------- 取图 ----------
 
+    def camera_config(self, name: str) -> CameraConfig | None:
+        return next((c for c in self.cameras if c.name == name), None)
+
+    def image_cell_name(self, camera: str) -> str:
+        """该相机的报告图片单元格名，未配置时回退 A0。"""
+        return _image_cell_name(self.camera_config(camera))
+
     def frame_image(self, camera: str, ts: str, width: int) -> tuple[bytes, str] | None:
         """取该事件时刻最近一帧（渲染图优先），返回 (JPEG, kind)。"""
         try:
@@ -380,7 +401,8 @@ class ReportServer:
         try:
             from .videocodec import load_images
 
-            rows = load_images(self.storage, camera, IMAGE_CELL,
+            rows = load_images(self.storage, camera,
+                               _image_cell_name(self.camera_config(camera)),
                                start=center - timedelta(seconds=FRAME_WINDOW),
                                end=center + timedelta(seconds=FRAME_WINDOW))
         except Exception as exc:
@@ -673,7 +695,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _api_dates(self) -> None:
         store = self.app.storage
         today = date.today().isoformat()
-        dates = [d for d in store.days_with_results(RESULT_CELL, limit=365) if d <= today]
+        cells = [cell.name for _camera, cell, _p, _f in result_specs(self.app.cameras)]
+        dates = [d for d in store.days_with_results_specs(cells, limit=365) if d <= today]
         if today not in dates:
             dates.insert(0, today)
         self._json({"dates": dates, "today": today,
@@ -737,7 +760,10 @@ class _Handler(BaseHTTPRequestHandler):
             "date": day.isoformat(), "hours": hours,
             "stations": stations,
             "totals": {"products": stats.total_products, "ng": stats.total_ng},
-            "ng_hours": app.storage.ng_hours(day.isoformat()),
+            "ng_hours": app.storage.ng_hours_specs(
+                day.isoformat(),
+                [(cell.name, passes, fails)
+                 for _camera, cell, passes, fails in result_specs(app.cameras)]),
             "warnings": stats.warnings,
             "draft": ({"exists": True, "updated_at": draft.get("updated_at"),
                        "updated_by": draft.get("updated_by")} if draft
@@ -752,7 +778,13 @@ class _Handler(BaseHTTPRequestHandler):
         if config is None:
             raise ApiError(404, f"未知相机：{camera}")
         ranges = ranges_iso(hour_ranges(day, hours))
-        ng_times = app.storage.range_ng_timestamps(camera, RESULT_CELL, ranges)
+        rule = _result_rule(config)
+        ng_times: list[str] = []
+        row = None
+        if rule is not None:
+            cell, passes, fails = rule
+            ng_times = app.storage.range_ng_timestamps(camera, cell.name, ranges, passes, fails)
+            row = app.storage.range_result_summary(camera, cell.name, ranges, passes, fails)
         tag_map = app.storage.list_report_tags(day.isoformat())
         tags = {ts: tag_map[(camera, ts)] for ts in ng_times
                 if (camera, ts) in tag_map}
@@ -765,8 +797,6 @@ class _Handler(BaseHTTPRequestHandler):
                   if ts and ts in ng_set][:limit]
         if not picked:
             picked = auto_pick(ng_times, tag_map, camera)[:limit]
-        row = next((r for r in app.storage.range_cell_summary(RESULT_CELL, ranges)
-                    if str(r[0]) == camera), None)
         stat = CameraStat(camera=camera,
                           total=int(row[2] or 0) if row else 0,
                           ok=int(row[3] or 0) if row else 0,
@@ -815,7 +845,8 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             raise ApiError(400, "时间戳格式错误")
         rows = self.app.storage.query_annotations(
-            camera=camera, cell=IMAGE_CELL, start=stamp, end=stamp, limit=5)
+            camera=camera, cell=self.app.image_cell_name(camera),
+            start=stamp, end=stamp, limit=5)
         if not rows:
             self._json({"exists": False, "shapes": []})
             return
@@ -985,7 +1016,8 @@ class _Handler(BaseHTTPRequestHandler):
                    "imageWidth": width, "imageHeight": height}
         reviewer = str(body.get("reviewer") or DEFAULT_REVIEWER)
         ann_id = self.app.storage.insert_annotation(
-            stamp, camera, IMAGE_CELL, "NG", json.dumps(payload, ensure_ascii=False),
+            stamp, camera, self.app.image_cell_name(camera), "NG",
+            json.dumps(payload, ensure_ascii=False),
             description=str(body.get("description") or ""), reviewer=reviewer)
         self._json({"ok": True, "id": ann_id, "image_width": width,
                     "image_height": height})

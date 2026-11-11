@@ -36,8 +36,11 @@
   - **GigE 工业相机**：支持 GigE Vision / GenICam 标准的工业面阵相机，软件取像后结合检测算法 / 判定逻辑产出结果，适合需要自主成像与检测的场景
 - **多相机并发**：可同时连接 / 混用多台智能相机与 GigE 工业相机，单相机掉线自动重连，不影响其他相机
 - **多单元格订阅**：智能相机每台可配置多个电子表格单元格（测量值、分数、判定结果等），支持按结果事件（`resultChanged`）触发或定时轮询（`poll_interval`）
-- **单元格数据类型**：`auto / int / float / string / bool / other`，未知类型可用 `auto`（按值推断）
+- **单元格数据类型**：`auto / int / float / string / bool / other / image`，未知类型可用 `auto`（按值推断）
 - **阈值判定**：advanced 记录模式 + 数值类型时按上下限判定 OK/NG；simple 模式仅记录数据、不判定
+- **报表单元格用途**（每台相机独立配置，不要求都叫 C11 / A0）：单元格「用途」可设为
+  `自动（按名称推断）/ 普通数据 / 判定结果 / 报告图片`；判定结果单元格可自定义通过值与不通过值
+  （默认 `OK` / `NG`，多个值用 `/` 分隔），报告图片单元格决定 NG 证据图与 OK 参考图取自哪一列
 
 ### MES 功能（本项目新增）
 
@@ -81,7 +84,7 @@
 | `schema_meta` | schema 版本号（规则同软件版本 `YY.MM.DD.N`） | `key`、`value`、`updated_at`；启动时比对并自动补列 / 升级 |
 | `reports` | 改善报告存档头 | `day` 统计日期、`hours` 勾选小时 JSON、`filename`、`xlsx_size` / `pdf_size`、`xlsx_sha256` / `pdf_sha256`、`stations` / `products` / `ng` 汇总、`payload_json` 生成参数、`created_at` / `created_by`、`saved_xlsx_path` / `saved_pdf_path` / `saved_at` 落盘信息 |
 | `report_files` | 报告文件二进制分块 | `report_id`（级联删除）、`kind`（`xlsx` / `pdf`）、`part_no` 分块序号、`data`（1 MB 分块，主键 `report_id+kind+part_no`） |
-| `report_tags` | 快速 tag（人工复核口径） | `day`、`camera`、`cell`（默认 `C11`）、`ts`、`tag`（`misjudge` 误判 / `product` 产品自身NG / `external` 外部原因）、`reviewer`、`note`、`updated_at`；主键 `day+camera+ts` |
+| `report_tags` | 快速 tag（人工复核口径） | `day`、`camera`、`cell`（该相机配置的报告图片单元格，默认 `A0`）、`ts`、`tag`（`misjudge` 误判 / `product` 产品自身NG / `external` 外部原因）、`reviewer`、`note`、`updated_at`；主键 `day+camera+ts` |
 | `report_drafts` | 报告工作台草稿 | `day` 主键、`hours`、`payload_json`（原因、选图、其他NG、关联工单、项目信息）、`updated_at`、`updated_by`；乐观锁基于 `updated_at` |
 | `tickets` | 改善工单（类 GitHub Issue） | `title`、`body`、`measure` 改善措施、`status`（`open`/`in_progress`/`done`/`closed`）、`close_reason`、`priority`、`category`（`misjudge`/`product`/`external`/`other`）、`station`、`camera`、`assignee`（默认「视觉相关人员」）、`due_date`、`created_at` / `updated_at` / `closed_at` |
 | `ticket_reports` | 工单 ↔ 报告双向关联 | `ticket_id`、`report_id`（均级联删除）、`station`、`created_at` |
@@ -97,7 +100,7 @@
 
 > 具体表结构以 `src/cameratinymes/storage.py` 实际代码为准。
 
-### AV1 帧序列压缩（A0 连续图像）
+### AV1 帧序列压缩（图片单元格连续图像）
 
 产线上同工位的 A0 图像连续且变化很小，逐张 JPEG 存储占用大。软件把同一「相机 + 单元格 + 类型」的连续帧按 GOP 打成 AV1（IVF）分片后入库：
 
@@ -308,7 +311,7 @@ MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖
 
 ### 取图规则
 
-- **NG 证据帧**：NG 事件时间与 A0 帧时间最近且相差 ≤ 5 秒；渲染图（`kind=render`）优先，缺失回退原图并在工作台标「原图」角标
+- **NG 证据帧**：NG 事件时间与该相机图片单元格（默认 `A0`）帧时间最近且相差 ≤ 5 秒；渲染图（`kind=render`）优先，缺失回退原图并在工作台标「原图」角标
 - **OK 参考图**：时段内 OK 记录时间中位数附近取一帧，匹配窗口 5 秒 → 60 秒 → 300 秒逐级放宽
 - 每工站最多 12 张 NG 图（报告 M..X 列），单图长边压到 800 px 以内
 
