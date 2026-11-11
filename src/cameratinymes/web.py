@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from .config import (AppSettings, CameraConfig, DEFAULT_IMAGE_CELL, ReportConfig,
                      image_cell, result_cell, result_specs, result_tokens,
                      save_settings)
+from .okng import hourly_okng
 from .report import (MAX_NG_IMAGES, CameraStat, ReportOptions,
                      auto_pick, auto_reason, collect_stats, hour_ranges, ranges_iso,
                      station_of)
@@ -657,6 +658,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/dates":
             self._api_dates()
+        elif path == "/api/okng":
+            self._api_okng(query)
         elif path == "/api/config":
             self._api_config()
         elif path == "/api/summary":
@@ -702,6 +705,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._json({"dates": dates, "today": today,
                     "earliest": dates[-1] if dates else today,
                     "draft_days": store.list_draft_days(60)})
+
+    def _api_okng(self, query: dict) -> None:
+        day = self._day(query)
+        cameras = hourly_okng(self.app.storage, day.isoformat(), self.app.cameras)
+        self._json({"date": day.isoformat(), "cameras": cameras})
 
     def _api_config(self) -> None:
         app = self.app

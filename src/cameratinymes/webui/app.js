@@ -254,6 +254,16 @@ function wireStatic() {
   $('#refreshReports').addEventListener('click', loadReports);
   $('#ticketStatusFilter').addEventListener('change', loadTickets);
   $('#ticketSearch').addEventListener('input', debounce(loadTickets, 300));
+  $('#okngDate').addEventListener('change', () => {
+    $('#okngDateInput').value = $('#okngDate').value;
+    loadOkng();
+  });
+  $('#okngDateInput').addEventListener('change', loadOkng);
+  $('#okngRefresh').addEventListener('click', loadOkng);
+  $('#okngAuto').addEventListener('change', () => {
+    if (okngTimer) { clearInterval(okngTimer); okngTimer = null; }
+    if ($('#okngAuto').checked) okngTimer = setInterval(loadOkng, 60000);
+  });
   $('#taskHead').addEventListener('click', () => {
     $('#taskPanel').classList.toggle('collapsed');
     $('#taskToggle').textContent = $('#taskPanel').classList.contains('collapsed') ? '展开' : '收起';
@@ -864,8 +874,10 @@ function switchView(view) {
   $('#workbench').classList.toggle('hidden', view !== 'report');
   $('#archiveView').classList.toggle('hidden', view !== 'archive');
   $('#ticketsView').classList.toggle('hidden', view !== 'tickets');
+  $('#okngView').classList.toggle('hidden', view !== 'okng');
   if (view === 'archive') loadReports();
   if (view === 'tickets') { $('#ticketDetail').classList.add('hidden'); $('#ticketListPanel').classList.remove('hidden'); loadTickets(); }
+  if (view === 'okng') loadOkng();
 }
 
 async function loadReports() {
@@ -913,6 +925,82 @@ async function reportAction(action, id) {
       toast('已删除'); loadReports();
     }
   } catch (err) { toast(err.message, 4000); }
+}
+
+/* ---------- 小时 OK/NG 率 ---------- */
+
+let okngTimer = null;
+let okngDatesLoaded = false;
+
+function okngDay() {
+  return $('#okngDateInput').value || state.day || state.cfg?.today || todayStr();
+}
+
+async function loadOkng() {
+  if (!okngDatesLoaded) {
+    okngDatesLoaded = true;
+    try {
+      const data = await api('/api/dates');
+      $('#okngDate').innerHTML = '<option value="">— 最近有数据日期 —</option>'
+        + (data.dates || []).map((d) => `<option value="${d}">${d}</option>`).join('');
+    } catch (err) { /* 日期列表失败不阻塞 */ }
+  }
+  if (!$('#okngDateInput').value) $('#okngDateInput').value = okngDay();
+  const day = okngDay();
+  const table = $('#okngTable');
+  try {
+    const data = await api('/api/okng?date=' + encodeURIComponent(day));
+    renderOkng(day, data.cameras || []);
+  } catch (err) {
+    table.innerHTML = `<div class="hint" style="padding:20px">加载失败：${esc(err.message)}</div>`;
+    $('#okngSummary').textContent = '';
+  }
+}
+
+function okngClass(rate, ng) {
+  if (ng <= 0) return 'full';
+  return rate >= 0.8 ? 'warn' : 'bad';
+}
+
+function renderOkng(day, cameras) {
+  const hours = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
+  const rows = [];
+  let gOk = 0, gNg = 0;
+
+  const cellHtml = (c) => {
+    const judged = c ? c.ok + c.ng : 0;
+    if (!judged) return '<td class="none">·</td>';
+    const rate = c.ok / judged;
+    return `<td class="${okngClass(rate, c.ng)}" title="OK ${c.ok} / NG ${c.ng}">`
+      + `${(rate * 100).toFixed(1)}%<span class="cnt">${c.ok}/${c.ng}</span></td>`;
+  };
+
+  rows.push('<table><thead><tr><th class="cam-h">相机</th>'
+    + hours.map((h) => `<th>${h}</th>`).join('')
+    + '<th style="min-width:96px">合计</th></tr></thead><tbody>');
+  if (!cameras.length) {
+    rows.push('<tr><td class="cam">-</td><td class="none" colspan="25">该日期无判定样本</td></tr>');
+  }
+  cameras.forEach((cam) => {
+    rows.push(`<tr><td class="cam">${esc(cam.camera)}</td>`);
+    hours.forEach((h) => rows.push(cellHtml(cam.hours[h])));
+    const judged = cam.ok + cam.ng;
+    const rate = judged ? cam.ok / judged : null;
+    rows.push(`<td class="total-col">${rate === null ? '-' : (rate * 100).toFixed(1) + '%'}`
+      + `<span class="cnt">${cam.ok}/${cam.ng}</span></td></tr>`);
+  });
+  rows.push('</tbody><tfoot><tr><td class="cam">合计</td>');
+  hours.forEach((h) => {
+    const ok = cameras.reduce((s, cam) => s + ((cam.hours[h] && cam.hours[h].ok) || 0), 0);
+    const ng = cameras.reduce((s, cam) => s + ((cam.hours[h] && cam.hours[h].ng) || 0), 0);
+    gOk += ok; gNg += ng;
+    rows.push(cellHtml(ok + ng ? { ok, ng } : null));
+  });
+  const gJudged = gOk + gNg;
+  rows.push(`<td class="total-col">${gJudged ? ((gOk / gJudged) * 100).toFixed(1) + '%' : '-'}`
+    + `<span class="cnt">${gOk}/${gNg}</span></td></tr></tfoot></table>`);
+  $('#okngTable').innerHTML = rows.join('');
+  $('#okngSummary').textContent = `${day} · ${cameras.length} 台相机 · 判定样本 ${gJudged}`;
 }
 
 /* ---------- 工单列表 / 详情 ---------- */

@@ -13,6 +13,7 @@
       <div class="tab active" data-view="report">工作台</div>
       <div class="tab" data-view="archive">报告存档</div>
       <div class="tab" data-view="tickets">工单</div>
+      <div class="tab" data-view="okng">OK/NG率</div>
       <div class="spacer"></div>
       <div class="save-state" id="saveState">正在载入…</div>
     </div>
@@ -117,6 +118,29 @@
       </table>
     </div>
     <div class="panel ticket-detail hidden" id="ticketDetail"></div>
+  </main>
+
+  <main class="okng hidden" id="okngView">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>小时 OK/NG 率</h2>
+        <select id="okngDate"></select>
+        <input type="date" id="okngDateInput">
+        <button class="mini" id="okngRefresh">刷新</button>
+        <label class="chk"><input type="checkbox" id="okngAuto"> 自动刷新(60s)</label>
+        <span class="hint" id="okngSummary"></span>
+        <span class="spacer"></span>
+        <span class="hint legend">
+          <i class="sw ok"></i>全OK
+          <i class="sw warn"></i>有NG
+          <i class="sw bad"></i>NG≥20%
+          <i class="sw none"></i>无数据
+        </span>
+      </div>
+      <div class="okng-table" id="okngTable">
+        <div class="hint" style="padding:20px">正在加载…</div>
+      </div>
+    </div>
   </main>
 </div>
 

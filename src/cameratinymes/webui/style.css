@@ -342,6 +342,58 @@ table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .task .acts { display: flex; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
 .task .acts a { color: var(--teal); text-decoration: none; border-bottom: 1px dotted var(--teal); }
 
+/* ---------- 小时 OK/NG 率 ---------- */
+
+.okng { padding: 12px; }
+.okng .panel-head .chk { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.okng .legend .sw {
+  display: inline-block; width: 12px; height: 12px;
+  border: 1px solid #8a8a8a; vertical-align: -2px; margin: 0 3px 0 10px;
+}
+.okng .legend .sw.ok { background: #bfe6d4; }
+.okng .legend .sw.warn { background: #ffe566; }
+.okng .legend .sw.bad { background: #ffb0b0; }
+.okng .legend .sw.none { background: #e6e6e6; }
+
+.okng-table {
+  overflow: auto;
+  max-height: calc(100vh - 210px);
+  border: 1px solid var(--line);
+  background: #fff;
+}
+.okng-table table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.okng-table th, .okng-table td {
+  border: 1px solid #d5d5d5;
+  padding: 3px 4px;
+  text-align: center;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.okng-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--chrome-light);
+  font-size: 11px;
+  padding: 4px 3px;
+}
+.okng-table th.cam-h, .okng-table td.cam {
+  position: sticky; left: 0; z-index: 3;
+  background: var(--chrome-light);
+  border-right: 1px solid var(--line);
+  font-weight: 700;
+  text-align: left;
+  padding: 3px 8px;
+  min-width: 110px;
+}
+.okng-table thead th.cam-h { z-index: 4; }
+.okng-table tbody tr:hover td.cam { background: var(--yellow); }
+.okng-table td .cnt { display: block; font-size: 10px; color: var(--muted); font-weight: 400; }
+.okng-table td.full { background: #bfe6d4; color: #003d2b; font-weight: 700; }
+.okng-table td.warn { background: #ffe566; color: #5c4a00; font-weight: 700; }
+.okng-table td.bad { background: #ffb0b0; color: #7a1010; font-weight: 700; }
+.okng-table td.none { background: #ececec; color: #a2a2a2; }
+.okng-table td.total-col { background: var(--chrome-light); font-weight: 700; }
+.okng-table tfoot td { background: var(--chrome-light); font-weight: 700; }
+
 /* ---------- 弹层 ---------- */
 
 .modal {
