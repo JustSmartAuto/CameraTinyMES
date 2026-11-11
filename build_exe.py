@@ -51,6 +51,12 @@ def main() -> None:
         "--add-data", f"{ASSETS}{';'}assets",
         "--add-data", f"{WEBUI}{';'}cameratinymes/webui",
         "--collect-all", "matplotlib",
+        # 渲染子进程内才 import webview，静态分析看不到，必须显式收集；
+        # 同时带上 pythonnet/clr 与 WebView2 原生 DLL（webview/lib）
+        "--collect-all", "webview",
+        "--collect-all", "pythonnet",
+        "--collect-all", "clr_loader",
+        "--hidden-import", "clr",
         str(ROOT / "src" / "cameratinymes" / "app.py"),
     ]
     if icon.exists():

@@ -73,7 +73,7 @@
 | 后台任务 | `tasks.py` 通用任务管理器：单线程队列、进度回调、取消、`dedupe_key` 去重、部分完成（`partial`）状态 |
 | 图表 | `matplotlib`（中文字体从 `assets/*.ttf` 加载） |
 | 界面 | tkinter（多相机宫格布局，参照 CameraHelper） |
-| 打包 | PyInstaller 单文件 exe，命名 `exe_{yyyyMMddHHmmss}`，logo 使用 `assets/app_icon.ico` |
+| 打包 | PyInstaller 单文件 exe，命名 `CameraTinyMES_{yyyyMMddHHmmss}`，logo 使用 `assets/app_icon.ico`；渲染子进程用到的 `pywebview` / `pythonnet` / `clr_loader` 与 WebView2 原生 DLL（`webview/lib`）显式收集，运行机需有 WebView2 运行时（Win10/11 通常自带） |
 
 ## 数据模型（SQLite）
 
@@ -438,7 +438,7 @@ MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖
 uv sync                              # 安装依赖
 uv run mes                           # 启动应用
 uv run mes --simulate                # 启动内置模拟相机离线体验完整流程
-uv run python build_exe.py           # PyInstaller 打包 dist/exe_{yyyyMMddHHmmss}.exe
+uv run python build_exe.py           # PyInstaller 打包 dist/CameraTinyMES_{yyyyMMddHHmmss}.exe
 ```
 
 应用启动时会自动拉起改善报告 Web 工作台：本机访问 `http://127.0.0.1:18110/report`，其他工控机访问 `http://<本机IP>:18110/report`。端口被占用时实际端口写入 `settings.json` 的 `web_port`，也可在「系统 → 设置 → 改善报告工作台」修改监听地址 / 端口 / 口令。

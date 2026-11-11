@@ -313,9 +313,33 @@ def image_data_url(jpeg_bytes: bytes) -> str:
 # ---------------------------------------------------------------- WebView 渲染进程
 
 
+def _emit_raw(obj: dict) -> None:
+    """向主进程写一行协议 JSON。
+
+    打包成 windowed exe 后 sys.stdout 可能为 None（无控制台），此时退回 fd 1
+    （主进程用 PIPE 接管 stdout，句柄仍然可用）。
+    """
+    out = sys.stdout
+    if out is None:
+        try:
+            out = os.fdopen(1, "w", encoding="utf-8", buffering=1)
+        except OSError:
+            return
+    try:
+        out.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        out.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def host_main() -> None:  # pragma: no cover - 子进程入口
     """子进程：启动隐藏 pywebview 窗口，按行处理渲染任务。"""
-    import webview
+    try:
+        import webview
+    except Exception as exc:  # noqa: BLE001 - 缺库/加载失败都交主进程回退 Pillow
+        # 不要抛异常：windowed exe 会弹「Unhandled exception in script」对话框
+        _emit_raw({"ready": False, "error": f"pywebview 不可用: {exc}"})
+        return
 
     results: dict[int, tuple] = {}
     cond = threading.Condition()
@@ -334,19 +358,22 @@ def host_main() -> None:  # pragma: no cover - 子进程入口
     )
     loaded = threading.Event()
     window.events.loaded += lambda: loaded.set()
-    out_lock = threading.Lock()
 
     def emit(obj: dict) -> None:
-        with out_lock:
-            sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
+        _emit_raw(obj)
 
     def loop() -> None:
         if not loaded.wait(30):
             emit({"ready": False, "error": "webview 初始化超时"})
             return
         emit({"ready": True})
-        for line in sys.stdin:
+        stream = sys.stdin
+        if stream is None:  # windowed exe 下可能为 None，退回 fd 0（主进程用 PIPE 接管）
+            try:
+                stream = os.fdopen(0, "r", encoding="utf-8", buffering=1)
+            except OSError:
+                return
+        for line in stream:
             line = line.strip()
             if not line:
                 continue
@@ -369,7 +396,10 @@ def host_main() -> None:  # pragma: no cover - 子进程入口
                 emit({"id": job_id, "ok": False, "error": error or "timeout"})
 
     threading.Thread(target=loop, daemon=True).start()
-    webview.start(gui="edgechromium", debug=False, private_mode=True)
+    try:
+        webview.start(gui="edgechromium", debug=False, private_mode=True)
+    except Exception as exc:  # noqa: BLE001 - 例如系统缺 WebView2 运行时
+        emit({"ready": False, "error": f"webview.start 失败: {exc}"})
 
 
 class WebRenderer:
