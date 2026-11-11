@@ -355,7 +355,6 @@ class ReportConfig:
     （桌面端设置界面可改），这里只放报告生成相关项，避免两套真值。
     """
 
-    image_embed: str = "dispimg"          # dispimg=WPS 嵌入单元格；floating=浮动图片
     pdf_engine: str = "reportlab"         # reportlab | com
     ng_images_per_station: int = 6        # 每工站 NG 图片上限（1~8）
     image_max_edge: int = 800             # 嵌入/绘制图片长边上限（px）
@@ -381,7 +380,6 @@ def load_report_config(data_dir: Path) -> ReportConfig:
     if not isinstance(raw, dict):
         return ReportConfig()
     return ReportConfig(
-        image_embed=str(raw.get("image_embed", "dispimg")).lower(),
         pdf_engine=str(raw.get("pdf_engine", "reportlab")).lower(),
         ng_images_per_station=max(1, min(8, int(raw.get("ng_images_per_station", 6)))),
         image_max_edge=max(200, min(2000, int(raw.get("image_max_edge", 800)))),

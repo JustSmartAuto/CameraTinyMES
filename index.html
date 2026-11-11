@@ -179,7 +179,7 @@
     </ul>
     <h3>MES 功能（本项目新增）</h3>
     <ul>
-      <li><strong>报表导出</strong>：xlsx 报表按 相机/日期/单元格 生成工作表，文件名自动追加时间戳防覆盖</li>
+      <li><strong>报表导出</strong>：xlsx 报表按 相机/日期/单元格 生成工作表，文件名自动追加时间戳防覆盖；图像单元格以 <strong>WPS 嵌入单元格（<code>DISPIMG</code>）</strong> 写入，图片随单元格缩放/排序，不浮动错位</li>
       <li><strong>可视化</strong>：折线 / 散点 / 趋势图（虚线基线 = 参考值/阈值，红色段 = 超差）并附 均值 / 标准差 / CPK / 超差率，中文字体内嵌 <code>assets/</code></li>
       <li><strong>人工复核（误判标注）</strong>：对生产数据中的误判图片进行人工复核——绘制方框 ROI 圈出误判之处，并填写误判原因 / 注意点说明；标注结果按 <strong>XAnyLabeling 3.3.x</strong> 格式存储，可直接用于其他视觉算法训练学习误判区分</li>
       <li><strong>当日改善分析报告</strong>（已实现，详见 <a href="#readme-report">同名章节</a>）：选日期 + 勾小时 → 统计各工站 NG/OK 与不良率 → 取证据图 → 生成 <strong>xlsx（WPS <code>DISPIMG</code> 嵌入单元格）+ PDF（A3 横版单页米黄底）</strong>，先入库再落盘；配套局域网 Web 工作台（快速 tag、草稿、标注、工单闭环、后台任务中心）</li>
@@ -195,7 +195,7 @@
       <tr><td>GigE 工业相机</td><td>GigE Vision / GenICam 取像（帧回调触发采样与判定）</td></tr>
       <tr><td>数据存储</td><td>优先连接 MariaDB（工控机可经 <code>reference/mariadb_installer.py</code> 安装）；连接不可用时自动回退到标准库 <code>sqlite3</code> 单文件数据库（WAL 模式），保证最小可用性</td></tr>
       <tr><td>报表</td><td><code>openpyxl</code>（xlsx）</td></tr>
-      <tr><td>改善报告（xlsx）</td><td><code>openpyxl</code> 生成版面 + WPS <code>DISPIMG</code> 公式把图片嵌入单元格（自行注入 <code>xl/cellimages.xml</code>），失败自动降级浮动图片</td></tr>
+      <tr><td>xlsx 图片</td><td><strong>所有 xlsx 产物（改善报告 + 数据导出）统一把图片嵌入单元格</strong>：openpyxl 生成版面后在 zip 层注入 WPS <code>DISPIMG</code> 公式与 <code>xl/cellimages.xml</code></td></tr>
       <tr><td>改善报告（PDF）</td><td><code>reportlab</code>：A3 横版单页、米黄纸底 <code>#FBF3DC</code>、中文字体内嵌</td></tr>
       <tr><td>Web 工作台</td><td>标准库 <code>ThreadingHTTPServer</code> + 原生 HTML/CSS/JS 单页（无框架、无 CDN），默认 <code>0.0.0.0:18110</code>，端口占用自动顺延</td></tr>
       <tr><td>后台任务</td><td><code>tasks.py</code>：单线程队列、进度回调、取消、<code>dedupe_key</code> 去重、部分完成（<code>partial</code>）状态</td></tr>
@@ -344,7 +344,7 @@
       <tr><td>工作表</td><td>主表名 = 统计日期（如 <code>11月10日</code>），另附「数据核对」表（逐相机 OK/NG 与 tag 分布）</td></tr>
       <tr><td>列</td><td>A 序号、B No.、C 工站&amp;机台、D 相机型号&amp;站名、E 实物图片、F OK相机图片、G 生产总数、H NG总数、I 视觉NG、J 其他NG、K、L 原因分析及改造解决方案、M..X NG 图</td></tr>
       <tr><td>隐藏列</td><td>E（实物图片）与 F（OK 相机图片）默认隐藏，按需用工作台「显示实物图片」开关打开</td></tr>
-      <tr><td>DISPIMG</td><td>图片以 <code>=_xlfn.DISPIMG("ID_xxx",1)</code> 公式嵌入单元格，并注入 <code>xl/cellimages.xml</code> + 关系文件 + <code>Content_Types</code> 清理；嵌入失败自动降级为浮动图片并记录警告</td></tr>
+      <tr><td>DISPIMG</td><td>图片以 <code>=_xlfn.DISPIMG("ID_xxx",1)</code> 公式嵌入单元格，并注入 <code>xl/cellimages.xml</code> + 关系文件 + <code>Content_Types</code>（WPS 私有部件/关系类型）；<code>a:ext</code> 写图片真实像素换算的 EMU，为 0 时 WPS 不绘制；数据导出的图像工作表同样走该链路，报告注入失败降级为浮动图片</td></tr>
       <tr><td>PDF</td><td>A3 横版单页（1190.55 × 841.89 pt）、米黄纸底 <code>#FBF3DC</code>、中文字体内嵌，跳过隐藏列、一页自适应</td></tr>
       <tr><td>文件名</td><td><code>视觉改善分析报告_{yyyyMMddHHmmss}.xlsx</code> / <code>.pdf</code>，写入数据目录的 <code>reports/</code></td></tr>
     </table>
@@ -383,7 +383,6 @@
     <p><code>config/report.json</code>：</p>
     <table>
       <tr><th>配置项</th><th>说明</th><th>默认值</th></tr>
-      <tr><td><code>image_embed</code></td><td><code>dispimg</code>（WPS 嵌入单元格）/ <code>floating</code>（浮动图片）</td><td><code>dispimg</code></td></tr>
       <tr><td><code>pdf_engine</code></td><td><code>reportlab</code> / <code>com</code></td><td><code>reportlab</code></td></tr>
       <tr><td><code>ng_images_per_station</code></td><td>每工站 NG 图上限（1~8）</td><td><code>6</code></td></tr>
       <tr><td><code>image_max_edge</code></td><td>嵌入图片长边上限（px，200~2000）</td><td><code>800</code></td></tr>
@@ -403,7 +402,7 @@ uv run python build_exe.py           # PyInstaller 打包 dist/exe_{yyyyMMddHHmm
     <h3>报告功能现场验证</h3>
     <ul>
       <li>用真实一天数据与客户模板逐格对比（列宽、行高、合并、图片位置、字体）</li>
-      <li>WPS（<code>DISPIMG</code> 单元格内嵌）、Excel（自动降级浮动图片）、PDF 三种打开方式的现场确认</li>
+      <li>WPS（<code>DISPIMG</code> 单元格内嵌，已现场确认）、Excel（不支持 <code>DISPIMG</code>，图片位置显示 <code>#NAME?</code>）、PDF 三种打开方式的现场确认</li>
       <li>单页容量评估：NG 图超过 12 张 / 工站较多时的多页排版方案</li>
     </ul>
     <h3>MES 功能</h3>

@@ -29,10 +29,11 @@ NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 CELLIMAGES_PART = "xl/cellimages.xml"
 CELLIMAGES_RELS = "xl/_rels/cellimages.xml.rels"
-CELLIMAGES_CONTENT_TYPE = (
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.cellimages+xml")
-CELLIMAGES_REL_TYPE = (
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/cellimages")
+# WPS 用的是私有部件类型与关系类型（对照 WPS 实际生成的文件），
+# 若写成 OpenXML 标准的 spreadsheetml.cellimages+xml / relationships/cellimages，
+# WPS 找不到该部件，所有 DISPIMG 都会显示 #REF!。
+CELLIMAGES_CONTENT_TYPE = "application/vnd.wps-officedocument.cellimage+xml"
+CELLIMAGES_REL_TYPE = "http://www.wps.cn/officeDocument/2020/cellImage"
 
 
 @dataclass
@@ -43,6 +44,24 @@ class DispImage:
     data: bytes
     extension: str = "jpeg"   # jpeg / png
     image_id: str = ""        # 缺省自动生成 ID_<32 hex>
+    sheet: str = ""           # 目标工作表名；空 = 由 sheet_name 参数决定
+
+
+def _picture_ext(data: bytes) -> tuple[int, int]:
+    """图片像素尺寸 → EMU（1 px = 9525 EMU）。
+
+    `a:ext` 为 0 时 WPS 不绘制任何内容（单元格空白），因此必须给出真实尺寸。
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as probe:
+            width, height = probe.size
+    except Exception:
+        width, height = 240, 180
+    if width <= 0 or height <= 0:
+        width, height = 240, 180
+    return width * 9525, height * 9525
 
 
 def inject_dispimg(xlsx_bytes: bytes, images: list[DispImage],
@@ -71,14 +90,17 @@ def inject_dispimg(xlsx_bytes: bytes, images: list[DispImage],
     for index, (image, image_id, rid) in enumerate(prepared, start=1):
         media_name = f"dispimg{index}.{image.extension}"
         media[f"xl/media/{media_name}"] = image.data
+        cx, cy = _picture_ext(image.data)
         parts.append(
             "<etc:cellImage><xdr:pic><xdr:nvPicPr>"
-            f'<xdr:cNvPr id="{index}" name="{image_id}"/><xdr:cNvPicPr/>'
+            f'<xdr:cNvPr id="{index}" name="{image_id}"/>'
+            '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr>'
             "</xdr:nvPicPr><xdr:blipFill>"
             f'<a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch>'
             "</xdr:blipFill><xdr:spPr>"
-            '<a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm>'
+            f'<a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
             '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+            '<a:noFill/><a:ln w="9525"><a:noFill/></a:ln>'
             "</xdr:spPr></xdr:pic></etc:cellImage>"
         )
         rels.append(
@@ -117,13 +139,17 @@ def inject_dispimg(xlsx_bytes: bytes, images: list[DispImage],
     entries["xl/_rels/workbook.xml.rels"] = _add_workbook_rel(
         entries["xl/_rels/workbook.xml.rels"])
 
-    # 4) 目标工作表：写入 DISPIMG 公式
-    target = _sheet_part(entries, sheet_name)
-    sheet_xml = entries[target]
+    # 4) 目标工作表：写入 DISPIMG 公式（按 DispImage.sheet 分组，支持多表）
+    targets: dict[str | None, list[tuple[str, str]]] = {}
     for image, image_id, _ in prepared:
-        sheet_xml = _set_cell_formula(
-            sheet_xml, image.cell, f'_xlfn.DISPIMG("{image_id}",1)')
-    entries[target] = sheet_xml
+        targets.setdefault(image.sheet or sheet_name, []).append((image.cell, image_id))
+    for name, items in targets.items():
+        part = _sheet_part(entries, name)
+        sheet_xml = entries[part]
+        for cell_ref, image_id in items:
+            sheet_xml = _set_cell_formula(
+                sheet_xml, cell_ref, f'_xlfn.DISPIMG("{image_id}",1)')
+        entries[part] = sheet_xml
 
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as target_zip:
@@ -151,15 +177,28 @@ def _add_workbook_rel(xml_bytes: bytes) -> bytes:
 
 
 def _sheet_part(entries: dict[str, bytes], sheet_name: str | None) -> str:
-    """按工作表名找到对应的 sheetN.xml（未指定则取第一张）。"""
+    """按工作表名找到对应的 sheetN.xml（未指定则取第一张）。
+
+    注意：XML 属性顺序不固定（openpyxl 写的是 Type/Target/Id），
+    因此按标签逐个取属性，不能用「Id 在前、Target 在后」的正则。
+    """
     workbook = entries.get("xl/workbook.xml", b"").decode("utf-8")
     rels = entries.get("xl/_rels/workbook.xml.rels", b"").decode("utf-8")
-    rel_map = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
-    sheets = re.findall(
-        r'<sheet[^>]*name="([^"]*)"[^>]*r:id="([^"]+)"', workbook, re.DOTALL)
-    if not sheets:
-        sheets = [(m[1], m[0]) for m in re.findall(
-            r'<sheet[^>]*r:id="([^"]+)"[^>]*name="([^"]*)"', workbook, re.DOTALL)]
+
+    rel_map: dict[str, str] = {}
+    for tag in re.findall(r"<Relationship[^>]*>", rels):
+        rid = re.search(r'Id="([^"]+)"', tag)
+        target = re.search(r'Target="([^"]+)"', tag)
+        if rid and target:
+            rel_map[rid.group(1)] = target.group(1)
+
+    sheets: list[tuple[str, str]] = []
+    for tag in re.findall(r"<sheet[^>]*>", workbook):
+        name = re.search(r'name="([^"]*)"', tag)
+        rid = re.search(r'r:id="([^"]+)"', tag)
+        if name and rid:
+            sheets.append((name.group(1), rid.group(1)))
+
     chosen = None
     for name, rid in sheets:
         if sheet_name and name == sheet_name:
@@ -204,5 +243,7 @@ def _set_cell_formula(xml_bytes: bytes, cell_ref: str, formula: str) -> bytes:
     target.set("t", "str")
     node = ET.SubElement(target, f"{{{NS_MAIN}}}f")
     node.text = formula
-    ET.SubElement(target, f"{{{NS_MAIN}}}v")
+    # WPS 会把公式结果缓存成 `=DISPIMG("ID_...",1)` 这样的字符串
+    cached = ET.SubElement(target, f"{{{NS_MAIN}}}v")
+    cached.text = "=" + formula.replace("_xlfn.", "", 1)
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)

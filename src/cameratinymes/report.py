@@ -585,12 +585,12 @@ def _col_letter(index: int) -> str:
 
 def layout_to_xlsx(layout: LayoutModel, extras: list[LayoutModel] | None = None,
                    *, images: list[ImageSpec] | None = None,
-                   floating_images: bool = True) -> bytes:
+                   floating_images: bool = False) -> bytes:
     """把版面模型写成 xlsx。
 
-    `floating_images=True`（默认）图片以浮动图片写入，打开后不会随单元格缩放；
-    `floating_images=False` 时只在锚点单元格留出空位，由 `wpsdispimg.inject_dispimg`
-    在 zip 层改写为 `_xlfn.DISPIMG` 嵌入单元格公式。
+    图片默认**嵌入单元格**（`DISPIMG`）：锚点单元格只留出带样式的空位，由
+    `wpsdispimg.inject_dispimg` 在 zip 层写入 `_xlfn.DISPIMG` 公式。
+    `floating_images=True` 仅用于注入失败时的兜底，会把图片写成浮动图片。
     """
     from io import BytesIO
 
@@ -783,12 +783,10 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
 
     tick("xlsx", 0, 1, "生成表格")
     check()
-    embed = (config.image_embed or "dispimg").lower()
-    xlsx = layout_to_xlsx(layout, extras, images=pictures,
-                          floating_images=embed != "dispimg")
+    xlsx = layout_to_xlsx(layout, extras, images=pictures)
     check()
 
-    if embed == "dispimg" and pictures:
+    if pictures:
         from .wpsdispimg import DispImage, inject_dispimg
 
         tick("dispimg", 0, len(pictures), "写入嵌入单元格图片")
@@ -797,7 +795,7 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
                 xlsx,
                 [DispImage(cell=f"{p.col}{p.row}", data=p.data) for p in pictures],
                 sheet_name=layout.sheet_name)
-        except Exception as exc:                 # 降级为浮动图片，保证能出文件
+        except Exception as exc:                 # 兜底：保证仍能出文件
             log.exception("DISPIMG 注入失败，降级为浮动图片")
             warnings.append(f"嵌入单元格图片失败，已降级为浮动图片：{exc}")
             xlsx = layout_to_xlsx(layout, extras, images=pictures,

@@ -1891,6 +1891,9 @@ def export_xlsx(
     """
     import threading as _t
     from collections import defaultdict
+    from io import BytesIO
+
+    from .wpsdispimg import DispImage, inject_dispimg
 
     class CancelledError(Exception):
         pass
@@ -1913,13 +1916,15 @@ def export_xlsx(
     notes = notes or {}
     image_cells = set(image_cells or ())
     cell_names = cells if cells is not None else storage.cells(camera)
+    embedded: list[DispImage] = []
     _prog(0, len(cell_names) + 1, "准备导出")
     for idx, cell in enumerate(cell_names):
         _check()
         _prog(idx, len(cell_names) + 1, f"处理单元格 {cell}")
         if cell in image_cells:
-            _append_image_sheets(wb, storage, camera, cell, notes.get(cell, ""), bold,
-                                 start, end, _check)
+            embedded.extend(
+                _append_image_sheets(wb, storage, camera, cell, notes.get(cell, ""),
+                                     bold, start, end, _check))
             continue
         rows = storage.query(camera, cell, start, end)
         ws = wb.create_sheet(title=cell[:31])
@@ -1980,36 +1985,54 @@ def export_xlsx(
     _prog(len(cell_names) + 1, len(cell_names) + 1, "保存文件")
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{camera}{timestamp_suffix()}.xlsx"
-    wb.save(path)
+    buffer = BytesIO()
+    wb.save(buffer)
+    data = buffer.getvalue()
+    if embedded:
+        # openpyxl 不支持 cellimages，保存后按 zip 层注入 DISPIMG 嵌入单元格
+        try:
+            data = inject_dispimg(data, embedded)
+        except Exception:
+            log.exception("DISPIMG 注入失败，导出的图像单元格将为空")
+    path.write_bytes(data)
     _prog(len(cell_names) + 1, len(cell_names) + 1, f"完成 → {path.name}")
     return path
 
 
-def _embed_image(ws, row: int, data: bytes, max_width: int = 480) -> bool:
-    """把图像 BLOB 嵌入单元格（B{row}），返回是否成功。"""
+def _cell_image(ws, row: int, data: bytes, sheet: str,
+                max_width: int = 480):
+    """图像 BLOB → `DispImage`（B{row}）；无法解码（如点云 CPCD）返回 None。
+
+    WPS 的 `a:ext` 取图片真实像素尺寸，所以行高必须按缩放后的高度设置，
+    否则图片会被压在默认行高里看不全。
+    """
     from io import BytesIO
 
-    from openpyxl.drawing.image import Image as XLImage
+    from PIL import Image
+
+    from .wpsdispimg import DispImage
 
     try:
-        img = XLImage(BytesIO(data))
+        with Image.open(BytesIO(data)) as probe:
+            width, height = probe.size
+            image_format = (probe.format or "JPEG").lower()
     except Exception:
-        return False
-    if img.width > max_width:
-        ratio = max_width / img.width
-        img.width = max_width
-        img.height = int(img.height * ratio)
-    ws.add_image(img, f"B{row}")
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    scale = min(1.0, max_width / width)
     # 行高按像素换算为磅（1px ≈ 0.75pt），避免图像压到下一行
-    ws.row_dimensions[row].height = max(15, img.height * 0.75)
-    return True
+    ws.row_dimensions[row].height = max(15, height * scale * 0.75)
+    return DispImage(cell=f"B{row}", data=data, sheet=sheet,
+                     extension="png" if image_format == "png" else "jpeg")
 
 
 def _append_image_sheets(wb, storage: Storage, camera: str, cell: str, note: str,
-                         bold, start, end, check_cancelled=None) -> None:
-    """图像单元格：原始图与渲染图各生成一个嵌入式工作表。"""
+                         bold, start, end, check_cancelled=None) -> list:
+    """图像单元格：原始图与渲染图各生成一个工作表，图片嵌入单元格。"""
     from .videocodec import load_images
 
+    embedded: list = []
     rows = load_images(storage, camera, cell, start=start, end=end)
     for kind, title in (("image", cell[:31]), ("render", f"{cell}渲染图"[:31])):
         items = [r for r in rows if r[1] == kind]
@@ -2029,6 +2052,10 @@ def _append_image_sheets(wb, storage: Storage, camera: str, cell: str, note: str
             if check_cancelled and i % 20 == 0:
                 check_cancelled()
             ws.cell(row=i, column=1, value=ts)
-            if not _embed_image(ws, i, data):
+            image = _cell_image(ws, i, data, ws.title)
+            if image is None:
                 ws.cell(row=i, column=2, value=f"[图像 {width}×{height}]")
+            else:
+                embedded.append(image)
         ws.freeze_panes = "A2"
+    return embedded

@@ -49,7 +49,7 @@
 
 ### MES 功能（本项目新增）
 
-- **报表导出**：xlsx 报表按 相机/日期/单元格 生成工作表，所有导出文件名自动追加时间戳（`_yyyyMMdd_HHmmss`）防覆盖
+- **报表导出**：xlsx 报表按 相机/日期/单元格 生成工作表，所有导出文件名自动追加时间戳（`_yyyyMMdd_HHmmss`）防覆盖；图像单元格以 **WPS 嵌入单元格（`DISPIMG`）** 写入，图片随单元格缩放/排序，不浮动错位
 - **可视化**：折线 / 散点 / 趋势图（虚线基线 = 参考值/阈值，红色段 = 超差）并附 均值 / 标准差 / CPK / 超差率，中文字体内嵌 `assets/`，不依赖系统字体
 - **人工复核（误判标注）**：对生产数据中的误判图片进行人工复核——在图像上绘制方框 ROI 圈出误判之处，并填写误判原因 / 注意点说明；标注结果按 **XAnyLabeling 3.3.x** 格式存储（详见下文「误判标注」），可直接用于其他视觉算法训练学习误判区分
 - **当日改善分析报告**（已实现，详见下文同名章节）：选日期 + 勾小时 → 统计各工站 NG/OK 与不良率 → 取证据图 → 生成 **xlsx（WPS `DISPIMG` 嵌入单元格）+ PDF（A3 横版单页米黄底）**，先入库再落盘；配套局域网 Web 工作台（快速 tag、草稿、标注、工单闭环、后台任务中心）
@@ -67,7 +67,7 @@
 | GigE 工业相机 | GigE Vision / GenICam 取像（帧回调触发采样与判定） |
 | 数据存储 | 优先连接 MariaDB（工控机可经 `reference/mariadb_installer.py` 安装）；连接不可用时自动回退到标准库 `sqlite3` 单文件数据库，保证最小可用性 |
 | 报表 | `openpyxl`（xlsx） |
-| 改善报告（xlsx） | `openpyxl` 生成版面 + WPS `DISPIMG` 公式把图片嵌入单元格（自实现 `xl/cellimages.xml` 注入），失败自动降级为浮动图片 |
+| xlsx 图片 | **所有 xlsx 产物（改善报告 + 数据导出）统一把图片嵌入单元格**：openpyxl 生成版面后在 zip 层注入 WPS `DISPIMG` 公式与 `xl/cellimages.xml`（自实现，不依赖 WPS 手工操作） |
 | 改善报告（PDF） | `reportlab`（`pdfrender.py`）：A3 横版单页、米黄纸底 `#FBF3DC`、中文字体内嵌 |
 | Web 工作台 | 标准库 `ThreadingHTTPServer` + 原生 HTML/CSS/JS 单页（无框架、无 CDN），默认 `0.0.0.0:18110`，端口占用自动顺延 |
 | 后台任务 | `tasks.py` 通用任务管理器：单线程队列、进度回调、取消、`dedupe_key` 去重、部分完成（`partial`）状态 |
@@ -366,7 +366,7 @@ MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖
 | 工作表 | 主表名 = 统计日期（如 `11月10日`），另附「数据核对」表（逐相机 OK/NG 与 tag 分布） |
 | 列 | A 序号、B No.、C 工站&机台、D 相机型号&站名、E 实物图片、F OK相机图片、G 生产总数、H NG总数、I 视觉NG、J 其他NG、K、L 原因分析及改造解决方案、M..X NG 图 |
 | 隐藏列 | E（实物图片）与 F（OK 相机图片）默认隐藏，按需用工作台「显示实物图片」开关打开 |
-| DISPIMG | 图片以 `=_xlfn.DISPIMG("ID_xxx",1)` 公式嵌入单元格，并注入 `xl/cellimages.xml` + 关系文件 + `Content_Types` 清理；嵌入失败自动降级为浮动图片并记录警告 |
+| DISPIMG | 图片以 `=_xlfn.DISPIMG("ID_xxx",1)` 公式嵌入单元格，并注入 `xl/cellimages.xml` + 关系文件 + `Content_Types`（WPS 私有部件类型 `application/vnd.wps-officedocument.cellimage+xml` 与关系类型 `http://www.wps.cn/officeDocument/2020/cellImage`）。`a:ext` 必须写图片真实像素换算的 EMU（1px=9525），写成 0 时 WPS 不绘制、单元格空白；数据导出的「原始图 / 渲染图」工作表同样走这条注入链路。报告注入失败时降级为浮动图片并记录警告 |
 | PDF | A3 横版单页（1190.55 × 841.89 pt）、米黄纸底 `#FBF3DC`、中文字体内嵌，跳过隐藏列、一页自适应 |
 | 文件名 | `视觉改善分析报告_{yyyyMMddHHmmss}.xlsx` / `.pdf`，写入数据目录的 `reports/` |
 
@@ -404,7 +404,6 @@ MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖
 
 | 配置项 | 说明 | 默认值 |
 |---|---|---|
-| `image_embed` | `dispimg`（WPS 嵌入单元格）/ `floating`（浮动图片） | `dispimg` |
 | `pdf_engine` | `reportlab` / `com` | `reportlab` |
 | `ng_images_per_station` | 每工站 NG 图上限（1~8） | `6` |
 | `image_max_edge` | 嵌入图片长边上限（px，200~2000） | `800` |
@@ -448,7 +447,7 @@ uv run python build_exe.py           # PyInstaller 打包 dist/CameraTinyMES_{yy
 ### 报告功能现场验证
 
 - [ ] 用真实一天数据与客户模板逐格对比（列宽、行高、合并、图片位置、字体）
-- [ ] WPS（`DISPIMG` 单元格内嵌）、Excel（自动降级浮动图片）、PDF 三种打开方式的现场确认
+- [ ] WPS（`DISPIMG` 单元格内嵌，已现场确认）、Excel（不支持 `DISPIMG`，图片位置显示 `#NAME?`）、PDF 三种打开方式的现场确认
 - [ ] 单页容量评估：NG 图超过 12 张 / 工站较多时的多页排版方案
 
 ### MES 功能
