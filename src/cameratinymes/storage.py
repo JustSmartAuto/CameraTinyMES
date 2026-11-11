@@ -1048,6 +1048,28 @@ class StorageBase:
         rows = self._fetchall("SELECT data FROM image_streams WHERE id=?", (stream_id,))
         return bytes(rows[0][0]) if rows else None
 
+    def list_image_frames(
+        self,
+        camera: str,
+        cell: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[tuple[str, str, int | None, int | None]]:
+        """返回图片索引 [(ts, kind, width, height)]，合并单帧 images 与 AV1 分片帧，按时间升序。"""
+        rows: list[tuple] = []
+        for table in ("images", "image_frames"):
+            sql = f"SELECT ts, kind, width, height FROM {table} WHERE camera=? AND cell=?"
+            args: list = [camera, cell]
+            if start:
+                sql += " AND ts>=?"
+                args.append(start.isoformat(timespec="milliseconds"))
+            if end:
+                sql += " AND ts<=?"
+                args.append(end.isoformat(timespec="milliseconds"))
+            rows.extend(self._fetchall(sql, tuple(args)))
+        rows.sort(key=lambda row: str(row[0]))
+        return rows
+
     # ---------- 事件 ----------
 
     def insert_event(

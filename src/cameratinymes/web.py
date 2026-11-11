@@ -339,11 +339,18 @@ class ReportServer:
         overlay = params.get("overlay_annotations")
         if overlay is None:
             overlay = self.cfg.overlay_annotations
+        ok_images: dict[str, dict] = {}
+        for camera, sel in (params.get("ok_images") or {}).items():
+            if not isinstance(sel, dict) or not sel.get("ts"):
+                continue
+            kind = sel.get("kind") if sel.get("kind") in ("image", "render") else ""
+            ok_images[str(camera)] = {"ts": str(sel["ts"]), "kind": kind}
         options = ReportOptions(
             day=day, hours=hours,
             reasons=params.get("reasons") or {},
             other_ng=params.get("other_ng") or {},
             picked_images=params.get("picked_images") or {},
+            ok_images=ok_images,
             show_physical=bool(params.get("show_physical")),
             overlay_annotations=bool(overlay),
             tickets={str(k): [int(v) for v in vals]
@@ -425,13 +432,18 @@ class ReportServer:
         """该相机的报告图片单元格名，未配置时回退 A0。"""
         return _image_cell_name(self.camera_config(camera))
 
-    def frame_image(self, camera: str, ts: str, width: int) -> tuple[bytes, str] | None:
-        """取该事件时刻最近一帧（渲染图优先），返回 (JPEG, kind)。"""
+    def frame_image(self, camera: str, ts: str, width: int,
+                    kind: str | None = None) -> tuple[bytes, str] | None:
+        """取该事件时刻最近一帧（默认渲染图优先），返回 (JPEG, kind)。
+
+        指定 `kind`（image / render）时只取该类型、且帧时间戳必须与 `ts` 完全一致，
+        供图库按原图/渲染图精确浏览。
+        """
         try:
             center = datetime.fromisoformat(ts)
         except ValueError:
             return None
-        key = (camera, ts, int(width))
+        key = (camera, ts, int(width), kind or "")
         cached = self._frames.get(key)
         if cached is not None:
             return cached, "cache"
@@ -446,17 +458,20 @@ class ReportServer:
             log.warning("读取 %s 图像失败：%s", camera, exc)
             return None
         best: dict[str, tuple[float, str, bytes]] = {}
-        for frame_ts, kind, _mime, _w, _h, data in rows:
+        for frame_ts, frame_kind, _mime, _w, _h, data in rows:
+            if kind:
+                if frame_kind != kind or str(frame_ts) != ts:
+                    continue
             try:
                 gap = abs((datetime.fromisoformat(str(frame_ts)) - center).total_seconds())
             except ValueError:
                 continue
             if gap > FRAME_WINDOW:
                 continue
-            bucket = "render" if kind == "render" else "image"
+            bucket = "render" if frame_kind == "render" else "image"
             if bucket not in best or gap < best[bucket][0]:
                 best[bucket] = (gap, str(frame_ts), data)
-        chosen = best.get("render") or best.get("image")
+        chosen = best.get(kind or "render") or best.get("image")
         if chosen is None:
             return None
         try:
@@ -699,6 +714,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/dates":
             self._api_dates()
+        elif path == "/api/gallery":
+            self._api_gallery(query)
         elif path == "/api/okng":
             self._api_okng(query)
         elif path == "/api/config":
@@ -859,10 +876,54 @@ class _Handler(BaseHTTPRequestHandler):
             "camera": camera, "station": station, "station_name": station_name,
             "note": _camera_note(config), "limit": limit,
             "ng_total": len(ng_times), "picked": picked, "tags": tags,
+            "ok": int(row[3] or 0) if row else 0,
+            "ok_pick": (payload.get("ok_images") or {}).get(camera),
             "ng": [{"ts": ts, "tag": tags.get(ts, "")} for ts in ng_times],
             "reason": (payload.get("reasons") or {}).get(camera) or "",
             "auto_reason": auto,
         })
+
+    def _api_gallery(self, query: dict) -> None:
+        """当天相机图库索引（原图 + 渲染图），支持按 HH:MM 时间段筛选。"""
+        camera = (query.get("camera") or [""])[0].strip()
+        config = self.app.camera_config(camera)
+        if config is None:
+            raise ApiError(404, f"未知相机：{camera}")
+        day = self._day(query)
+        start = self._gallery_time(query, day, "start", 0)
+        end = self._gallery_time(query, day, "end", 24 * 60 - 1) + timedelta(seconds=59)
+        if end < start:
+            start, end = end, start
+        kind = (query.get("kind") or ["all"])[0]
+        kind = kind if kind in ("image", "render") else None
+        try:
+            limit = max(1, min(300, int((query.get("limit") or ["120"])[0])))
+        except ValueError:
+            limit = 120
+        cell = _image_cell_name(config)
+        rows = self.app.storage.list_image_frames(camera, cell, start, end)
+        items = [{"ts": str(ts), "kind": str(k), "width": w, "height": h,
+                  "url": (f"/api/image/{quote(camera, safe='')}/{quote(str(ts), safe='')}"
+                          f"?kind={quote(str(k))}&w=240")}
+                 for ts, k, w, h in rows if kind is None or k == kind]
+        self._json({"camera": camera, "cell": cell, "date": day.isoformat(),
+                    "kind": kind or "all", "total": len(items),
+                    "start": start.strftime("%H:%M"), "end": end.strftime("%H:%M"),
+                    "items": items[-limit:]})
+
+    @staticmethod
+    def _gallery_time(query: dict, day: date, key: str, default_minutes: int) -> datetime:
+        text = (query.get(key) or [""])[0].strip()
+        minutes = default_minutes
+        if text:
+            try:
+                hour, minute = text.split(":", 1)
+                minutes = int(hour) * 60 + int(minute)
+            except ValueError:
+                raise ApiError(400, f"{key} 时间格式应为 HH:MM")
+            if not 0 <= minutes <= 24 * 60 - 1:
+                raise ApiError(400, f"{key} 时间超出范围")
+        return datetime.combine(day, datetime.min.time()) + timedelta(minutes=minutes)
 
     def _api_image(self, rest: str, query: dict) -> None:
         parts = rest.split("/")
@@ -873,17 +934,19 @@ class _Handler(BaseHTTPRequestHandler):
             width = int((query.get("w") or ["320"])[0])
         except ValueError:
             width = 320
-        result = self.app.frame_image(camera, ts, width)
+        kind = (query.get("kind") or [""])[0]
+        kind = kind if kind in ("image", "render") else None
+        result = self.app.frame_image(camera, ts, width, kind)
         if result is None:
             raise ApiError(404, "无图像")
-        data, kind = result
-        etag = f'"{camera}|{ts}|{width}|{kind}"'
+        data, actual = result
+        etag = f'"{camera}|{ts}|{width}|{kind or ""}|{actual}"'
         if self.headers.get("If-None-Match") == etag:
             self._send(304, b"", "image/jpeg", {"ETag": etag})
             return
         self._send(200, data, "image/jpeg",
                    {"ETag": etag, "Cache-Control": "private, max-age=600",
-                    "X-Image-Kind": kind})
+                    "X-Image-Kind": actual})
 
     def _api_annotation_get(self, rest: str) -> None:
         parts = rest.split("/")
@@ -1176,6 +1239,7 @@ class _Handler(BaseHTTPRequestHandler):
             "reasons": body.get("reasons") or {},
             "other_ng": body.get("other_ng") or {},
             "picked_images": body.get("picked_images") or {},
+            "ok_images": body.get("ok_images") or {},
             "show_physical": bool(body.get("show_physical")),
             "overlay_annotations": (bool(body["overlay_annotations"])
                                     if "overlay_annotations" in body else None),

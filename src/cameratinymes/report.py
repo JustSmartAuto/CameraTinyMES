@@ -79,6 +79,7 @@ class ReportOptions:
     other_ng: dict[str, int] = field(default_factory=dict)      # 工站/相机→其他NG 改数
     picked_images: dict[str, list[str]] = field(default_factory=dict)  # 相机→NG ts（渲染图）
     show_physical: bool = False                        # 实物图片列（E）是否显示
+    ok_images: dict[str, dict] = field(default_factory=dict)  # 相机→{ts, kind} 指定 OK 参考图
     tickets: dict[str, list[int]] = field(default_factory=dict)  # 工站→关联工单 id
     overlay_annotations: bool = False                  # 报告图片是否叠加人工标注框
 
@@ -755,7 +756,7 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
                     camera=cam.camera, ts=ts))
     layout.images = pictures
 
-    # OK 参考图（F 列，隐藏列）：取时段内 OK 记录时间中位数附近一帧
+    # OK 参考图（F 列，隐藏列）：优先使用人工从图库选定的图，否则取时段内 OK 记录中位数附近一帧
     tick("images", total_pics, total_pics, "取 OK 参考图")
     ok_count = 0
     iso = ranges_iso(hour_ranges(options.day, options.hours))
@@ -767,19 +768,37 @@ def build_daily_report(storage, cameras: list[CameraConfig], options: ReportOpti
             result = result_cell(camera_cfg) if camera_cfg is not None else None
             if result is None:
                 continue
-            passes, fails = result_tokens(result)
-            ok_times = storage.range_ok_timestamps(
-                cam.camera, result.name, iso, pass_values=passes, fail_values=fails)
-            if not ok_times:
-                continue
-            ok_ts = ok_times[len(ok_times) // 2]
-            data = _load_frame(storage, cam.camera, ok_ts, config, warnings,
-                               image_name(cam.camera))
+            pick = (options.ok_images or {}).get(cam.camera) or {}
+            ok_ts = str(pick.get("ts") or "")
+            data = None
+            if ok_ts:
+                data = _load_selected_image(storage, cam.camera, ok_ts,
+                                            str(pick.get("kind") or ""), config,
+                                            image_name(cam.camera))
+                if not data:
+                    warnings.append(f"{cam.camera} 选定的 OK 图缺失，已改用自动取图")
+            if not data:
+                passes, fails = result_tokens(result)
+                ok_times = storage.range_ok_timestamps(
+                    cam.camera, result.name, iso, pass_values=passes, fail_values=fails)
+                if not ok_times:
+                    continue
+                ok_ts = ok_times[len(ok_times) // 2]
+                data = _load_frame(storage, cam.camera, ok_ts, config, warnings,
+                                   image_name(cam.camera))
             ok_count += 1
             if ok_count % 3 == 0:
                 check()
             if not data:
                 continue
+            if options.overlay_annotations:
+                try:
+                    stamp = datetime.fromisoformat(str(ok_ts))
+                except ValueError:
+                    stamp = None
+                if stamp is not None:
+                    data = _overlay_annotations(storage, cam.camera,
+                                                image_name(cam.camera), stamp, data)
             pictures.append(ImageSpec(row=rows[cam.camera], col="F", data=data,
                                       camera=cam.camera, ts=ok_ts))
             layout.images = pictures
@@ -899,16 +918,28 @@ def _nearest_frame(frames: list[tuple[datetime, str, bytes]], center: datetime,
 
 def _overlay_annotations(storage, camera: str, cell: str, stamp: datetime,
                          data: bytes) -> bytes:
-    """把该时刻的人工标注方框烧录到图片上；无标注或处理失败时原样返回。
+    """把该时刻附近最近的人工标注方框烧录到图片上；无标注或处理失败时原样返回。
 
     标注坐标基于标注时网页显示图（`imageWidth/imageHeight`），按目标图片尺寸等比换算。
+    NG 与 OK 图同样适用（误判 NG / 误判 OK 两类）。
     """
     try:
-        rows = storage.query_annotations(camera=camera, cell=cell,
-                                         start=stamp, end=stamp, limit=1)
-        if not rows:
+        rows = storage.query_annotations(
+            camera=camera, cell=cell,
+            start=stamp - timedelta(seconds=FRAME_WINDOW),
+            end=stamp + timedelta(seconds=FRAME_WINDOW), limit=20)
+        best = None
+        best_gap = None
+        for row in rows:
+            try:
+                gap = abs((datetime.fromisoformat(str(row[4])) - stamp).total_seconds())
+            except ValueError:
+                continue
+            if best_gap is None or gap < best_gap:
+                best, best_gap = row, gap
+        if best is None:
             return data
-        payload = json.loads(rows[0][8] or "{}")
+        payload = json.loads(best[8] or "{}")
         shapes = payload.get("shapes") or []
         if not shapes:
             return data
@@ -944,6 +975,39 @@ def _overlay_annotations(storage, camera: str, cell: str, stamp: datetime,
     except Exception as exc:
         log.warning("叠加标注框失败 %s@%s：%s", camera, stamp, exc)
         return data
+
+
+def _load_selected_image(storage, camera: str, ts: str, kind: str,
+                         config: ReportConfig,
+                         image_cell_name: str = IMAGE_CELL) -> bytes | None:
+    """按人工图库选择精确取图（时间戳 + 类型），失败返回 None 由调用方回退。"""
+    from . import images as image_mod
+
+    kind = kind if kind in ("image", "render") else ""
+    try:
+        center = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    try:
+        from .videocodec import load_images
+
+        rows = load_images(storage, camera, image_cell_name, kind=kind or None,
+                           start=center - timedelta(seconds=1),
+                           end=center + timedelta(seconds=1))
+    except Exception as exc:
+        log.warning("按选择取图失败 %s@%s：%s", camera, ts, exc)
+        return None
+    for frame_ts, frame_kind, _mime, _w, _h, data in rows:
+        if str(frame_ts).replace(" ", "T") != ts.replace(" ", "T"):
+            continue
+        if kind and frame_kind != kind:
+            continue
+        try:
+            return image_mod.to_jpeg(data, max_width=config.image_max_edge)[0]
+        except Exception as exc:
+            log.warning("转换选定图片失败 %s@%s：%s", camera, ts, exc)
+            return None
+    return None
 
 
 def _load_frame(storage, camera: str, ts: str, config: ReportConfig,

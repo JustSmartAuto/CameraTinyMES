@@ -427,6 +427,21 @@ table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .modal-box .head .spacer { flex: 1; }
 .modal-box .body { padding: 12px; overflow: auto; background: #fff; }
+.okbar { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.gallery-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+.gallery-filter label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.gallery-item {
+  margin: 0; display: flex; flex-direction: column; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 5px; background: #fafafa;
+}
+.gallery-item img { display: block; width: 100%; height: 110px; object-fit: cover; background: #111; }
+.gallery-item figcaption {
+  display: flex; justify-content: space-between; gap: 6px;
+  padding: 4px 6px; font-size: 11px; color: var(--muted);
+}
+.gallery-item .ops { display: flex; gap: 6px; padding: 0 6px 6px; }
+.gallery-item .ops button { flex: 1; }
 .annot-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 12px; }
 @media (max-width: 860px) { .annot-wrap { grid-template-columns: 1fr; } }
 .canvas-box { position: relative; background: #111; border: 1px solid #777; overflow: hidden; }

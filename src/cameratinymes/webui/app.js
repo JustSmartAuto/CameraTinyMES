@@ -23,6 +23,7 @@ const state = {
   reasonDirty: false,
   reasons: {},
   picked: {},
+  okPicks: {},
   otherNg: {},
   ticketSel: {},
   tags: {},
@@ -163,6 +164,8 @@ async function boot() {
     switchView('tickets');
     if (id) openTicket(id);
   }
+  const view = params.get('view');
+  if (view && ['report', 'archive', 'tickets', 'okng'].includes(view)) switchView(view);
 }
 
 function fillStatic() {
@@ -375,6 +378,7 @@ async function selectCamera(camera) {
     state.tags[camera] = Object.assign({}, detail.tags || {});
     if (!(camera in state.reasons)) state.reasons[camera] = detail.reason || '';
     if (!(camera in state.picked)) state.picked[camera] = (detail.picked || []).slice();
+    if (!(camera in state.okPicks)) state.okPicks[camera] = detail.ok_pick || null;
     if (!(state.ticketSel[detail.station])) state.ticketSel[detail.station] = [];
     renderCamHead();
     renderCards();
@@ -390,11 +394,24 @@ function renderCamHead() {
   const d = state.detail;
   if (!d) return;
   const tagged = Object.keys(d.tags || {}).length;
+  const pick = state.okPicks[d.camera];
+  const okText = pick
+    ? `${timeText(pick.ts)} · ${pick.kind === 'render' ? '渲染图' : '原图'}`
+    : (d.ok ? '自动（OK 记录中位数）' : '无 OK 记录');
   $('#camHead').innerHTML = `
     <h2>${esc(d.camera)}</h2>
     <span class="meta">${esc(d.station)} ${esc(d.station_name || '')} · ${esc(d.note || '')}</span>
     <span class="meta">NG ${d.ng_total} · 已标注 ${tagged} · 入报告 ${(state.picked[d.camera] || []).length}/${d.limit}</span>
+    <span class="okbar">OK 参考图：<b>${okText}</b>
+      <button class="mini" id="okPickBtn">图库选择…</button>
+      ${pick ? '<button class="mini ghost" id="okAutoBtn">恢复自动</button>' : ''}</span>
     <span class="count">点击图片可画框标注；1=误判 2=产品自身NG 3=外部原因 0=清除</span>`;
+  $('#okPickBtn').addEventListener('click', openGallery);
+  $('#okAutoBtn')?.addEventListener('click', () => {
+    delete state.okPicks[d.camera];
+    renderCamHead();
+    saveDraftSoon();
+  });
 }
 
 /* ---------- 图片卡片 ---------- */
@@ -487,17 +504,18 @@ async function loadThumb(card, camera, ts) {
   } catch (err) { /* 忽略单张失败 */ }
 }
 
-async function imageInfo(camera, ts, width) {
-  const key = `${camera}|${ts}|${width}`;
+async function imageInfo(camera, ts, width, kind) {
+  const key = `${camera}|${ts}|${width}|${kind || ''}`;
   if (state.imageCache.has(key)) return state.imageCache.get(key);
-  const res = await fetch(`/api/image/${enc(camera)}/${enc(ts)}?w=${width}`);
+  const suffix = kind ? `&kind=${enc(kind)}` : '';
+  const res = await fetch(`/api/image/${enc(camera)}/${enc(ts)}?w=${width}${suffix}`);
   if (!res.ok) {
     state.imageCache.set(key, null);
     return null;
   }
-  const kind = res.headers.get('X-Image-Kind') || 'image';
+  const actualKind = res.headers.get('X-Image-Kind') || 'image';
   const blob = await res.blob();
-  const info = { url: URL.createObjectURL(blob), kind };
+  const info = { url: URL.createObjectURL(blob), kind: actualKind };
   state.imageCache.set(key, info);
   return info;
 }
@@ -683,6 +701,7 @@ function payload() {
   return {
     reasons: state.reasons,
     picked_images: state.picked,
+    ok_images: state.okPicks,
     other_ng: state.otherNg,
     tickets: state.ticketSel,
     project_name: $('#projectName').value,
@@ -699,6 +718,7 @@ function applyDraft(draft) {
   const p = draft.payload || {};
   state.reasons = Object.assign({}, p.reasons || {});
   state.picked = Object.assign({}, p.picked_images || {});
+  state.okPicks = Object.assign({}, p.ok_images || {});
   state.otherNg = Object.assign({}, p.other_ng || {});
   state.ticketSel = {};
   Object.keys(p.tickets || {}).forEach((k) => { state.ticketSel[k] = (p.tickets[k] || []).map(Number); });
@@ -773,6 +793,7 @@ async function generate() {
     reasons: state.reasons,
     other_ng: state.otherNg,
     picked_images: state.picked,
+    ok_images: state.okPicks,
     tickets: state.ticketSel,
   };
   try {
@@ -1178,12 +1199,86 @@ async function applyEntry(result) {
   saveDraft(false);
 }
 
+/* ---------- 图库（OK 参考图选择） ---------- */
+
+function openGallery() {
+  const d = state.detail;
+  if (!d) return;
+  openModal(`<div class="head">
+      <span>图库 · ${esc(d.camera)}</span>
+      <span class="spacer"></span>
+      <span class="hint" style="font-weight:400">选择当天 OK 参考图，支持原图与渲染图</span>
+      <button class="mini" data-close>关闭</button>
+    </div>
+    <div class="body">
+      <div class="gallery-filter">
+        <label>起始 <input type="time" id="gStart" value="00:00"></label>
+        <label>结束 <input type="time" id="gEnd" value="23:59"></label>
+        <label>类型 <select id="gKind">
+          <option value="all">全部</option>
+          <option value="render">渲染图</option>
+          <option value="image">原图</option>
+        </select></label>
+        <button class="mini" id="gReload">筛选</button>
+        <span class="hint" id="gHint">载入中…</span>
+      </div>
+      <div class="gallery" id="gallery"></div>
+    </div>`);
+  $('#gReload').addEventListener('click', loadGallery);
+  loadGallery();
+}
+
+async function loadGallery() {
+  const d = state.detail;
+  if (!d) return;
+  const grid = $('#gallery');
+  const hint = $('#gHint');
+  grid.innerHTML = '';
+  hint.textContent = '载入中…';
+  try {
+    const data = await api(`/api/gallery?camera=${enc(d.camera)}&date=${state.day}`
+      + `&start=${$('#gStart').value}&end=${$('#gEnd').value}`
+      + `&kind=${$('#gKind').value}&limit=120`);
+    if (!data.items.length) {
+      hint.textContent = '该时间段没有图片';
+      return;
+    }
+    hint.textContent = `${data.items.length} 张（${data.start}–${data.end}）`;
+    grid.innerHTML = data.items.map((item) => `
+      <figure class="gallery-item" data-ts="${esc(item.ts)}" data-kind="${esc(item.kind)}">
+        <img loading="lazy" src="${item.url}" alt="${timeText(item.ts)}">
+        <figcaption><span>${timeText(item.ts)}</span>
+          <span>${item.kind === 'render' ? '渲染图' : '原图'}</span></figcaption>
+        <div class="ops">
+          <button class="mini primary" data-act="use">设为 OK 图</button>
+          <button class="mini ghost" data-act="annotate">画框标注</button>
+        </div>
+      </figure>`).join('');
+    grid.querySelectorAll('.gallery-item').forEach((node) => {
+      const ts = node.dataset.ts;
+      const kind = node.dataset.kind;
+      node.querySelector('[data-act="use"]').addEventListener('click', () => {
+        state.okPicks[d.camera] = { ts, kind };
+        renderCamHead();
+        closeModal();
+        saveDraftSoon();
+        toast(`已选 OK 图：${timeText(ts)}`);
+      });
+      node.querySelector('[data-act="annotate"]').addEventListener('click', () => {
+        openAnnotator(d.camera, ts, kind);
+      });
+    });
+  } catch (err) {
+    hint.textContent = `载入失败：${err.message}`;
+  }
+}
+
 /* ---------- 标注 ---------- */
 
-async function openAnnotator(camera, ts) {
+async function openAnnotator(camera, ts, kind) {
   const width = state.cfg.image_max_edge;
   let info;
-  try { info = await imageInfo(camera, ts, width); } catch (err) { info = null; }
+  try { info = await imageInfo(camera, ts, width, kind); } catch (err) { info = null; }
   if (!info) { toast('该时刻没有可用图像'); return; }
   let ann = { shapes: [] };
   try { ann = await api(`/api/annotation/${enc(camera)}/${enc(ts)}`); } catch (err) { /* 忽略 */ }

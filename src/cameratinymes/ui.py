@@ -489,6 +489,7 @@ class MonitorApp:
         menubar.add_cascade(label="数据", menu=data_menu)
         web_menu = tk.Menu(menubar, tearoff=0)
         web_menu.add_command(label="任务进度页…", command=self.open_web_backend)
+        web_menu.add_command(label="OK/NG 率页…", command=self.open_okng_page)
         web_menu.add_command(label="复制访问地址", command=self.copy_web_backend_url)
         menubar.add_cascade(label="网页后台", menu=web_menu)
         sys_menu = tk.Menu(menubar, tearoff=0)
@@ -951,18 +952,34 @@ class MonitorApp:
         webbrowser.open(urls["local"])
         self._log(f"打开改善报告工作台：{urls['local']}")
 
-    def open_web_backend(self) -> None:
-        """在浏览器打开网页后台的任务进度页（服务未启动则先启动）。"""
+    def _web_base_url(self) -> str | None:
+        """确保网页服务已启动并返回本机地址；失败时提示并返回 None。"""
         if self._report_server is None:
             self._start_report_server()
         if self._report_server is None:
             messagebox.showerror("网页后台", "网页后台服务未启动，请检查日志或端口占用。",
                                  parent=self.root)
-            return
+            return None
         self._report_server.cameras = list(self.cameras)
-        url = f"http://127.0.0.1:{self._report_server.port}/?view=tasks"
+        return f"http://127.0.0.1:{self._report_server.port}"
+
+    def open_web_backend(self) -> None:
+        """在浏览器打开网页后台的任务进度页（服务未启动则先启动）。"""
+        base = self._web_base_url()
+        if base is None:
+            return
+        url = f"{base}/?view=tasks"
         webbrowser.open(url)
         self._log(f"打开网页后台任务进度：{url}")
+
+    def open_okng_page(self) -> None:
+        """在浏览器打开网页后台的 OK/NG 率看板。"""
+        base = self._web_base_url()
+        if base is None:
+            return
+        url = f"{base}/?view=okng"
+        webbrowser.open(url)
+        self._log(f"打开 OK/NG 率看板：{url}")
 
     def copy_web_backend_url(self) -> None:
         """复制网页后台访问地址（优先局域网，便于工控机/手机查看进度）。"""
