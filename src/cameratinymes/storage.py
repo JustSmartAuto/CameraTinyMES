@@ -70,6 +70,13 @@ def _ranges_where(ranges: list[tuple[str, str]] | None,
     return clause, tuple(v for r in ranges for v in r)
 
 
+# 结果单元格判定：优先 samples.ok；历史数据与文本结果（C11 返回 "OK"/"NG"）未写 ok，
+# 按 text 兜底，避免结果统计全空。
+_RESULT_STATUS = ("CASE WHEN ok IS NOT NULL THEN ok"
+                  " WHEN UPPER(TRIM(text))='OK' THEN 1"
+                  " WHEN UPPER(TRIM(text))='NG' THEN 0 END")
+
+
 _REPORT_COLUMNS = (
     "id", "day", "hours", "title", "filename", "xlsx_size", "pdf_size",
     "xlsx_sha256", "pdf_sha256", "stations", "products", "ng", "payload_json",
@@ -1192,10 +1199,10 @@ class StorageBase:
                            ranges: list[tuple[str, str]] | None) -> list[tuple]:
         """各相机在时段内的结果计数：camera, cell, 总数, OK, NG, 首末时间。"""
         sql = ("SELECT camera, cell, COUNT(*),"
-               " COALESCE(SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END), 0),"
-               " COALESCE(SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END), 0),"
+               f" COALESCE(SUM(CASE WHEN {_RESULT_STATUS}=1 THEN 1 ELSE 0 END), 0),"
+               f" COALESCE(SUM(CASE WHEN {_RESULT_STATUS}=0 THEN 1 ELSE 0 END), 0),"
                " MIN(ts), MAX(ts)"
-               " FROM samples WHERE cell=? AND ok IS NOT NULL")
+               " FROM samples WHERE cell=?")
         clause, args = _ranges_where(ranges)
         if clause:
             sql += " AND " + clause
@@ -1205,7 +1212,7 @@ class StorageBase:
     def range_ng_timestamps(self, camera: str, cell: str,
                             ranges: list[tuple[str, str]] | None) -> list[str]:
         """该相机在时段内所有 NG 的 ts（升序），用于抽图与打 tag。"""
-        sql = "SELECT ts FROM samples WHERE camera=? AND cell=? AND ok=0"
+        sql = f"SELECT ts FROM samples WHERE camera=? AND cell=? AND {_RESULT_STATUS}=0"
         clause, args = _ranges_where(ranges)
         if clause:
             sql += " AND " + clause
@@ -1216,7 +1223,7 @@ class StorageBase:
                             ranges: list[tuple[str, str]] | None,
                             limit: int = 2000) -> list[str]:
         """该相机在时段内 OK 的 ts（升序，最多 limit 条），用于选 OK 参考图。"""
-        sql = "SELECT ts FROM samples WHERE camera=? AND cell=? AND ok=1"
+        sql = f"SELECT ts FROM samples WHERE camera=? AND cell=? AND {_RESULT_STATUS}=1"
         clause, args = _ranges_where(ranges)
         if clause:
             sql += " AND " + clause
@@ -1249,7 +1256,8 @@ class StorageBase:
             timespec="milliseconds")
         rows = self._fetchall(
             "SELECT DISTINCT substr(ts, 12, 2) FROM samples"
-            " WHERE cell=? AND ok=0 AND ts>=? AND ts<?", (cell, start, end))
+            f" WHERE cell=? AND {_RESULT_STATUS}=0 AND ts>=? AND ts<?",
+            (cell, start, end))
         return sorted({int(str(row[0])[:2]) for row in rows
                        if str(row[0])[:2].isdigit()})
 
