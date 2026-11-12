@@ -177,6 +177,7 @@ input[type="text"], input[type="date"], select, textarea {
   font-size: 11px;
 }
 .badge.hot { background: #fbe1e1; color: var(--red); font-weight: 700; }
+.badge.draft { background: #fff3cd; color: #8a6d00; font-weight: 700; padding: 0 6px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #c4c4c4; }
 .dot.ng { background: var(--red); }
 .dot.tagged { background: var(--blue); }

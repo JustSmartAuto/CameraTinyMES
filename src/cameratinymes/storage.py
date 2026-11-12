@@ -1553,9 +1553,10 @@ class StorageBase:
 
     def list_draft_days(self, limit: int = 60) -> list[dict]:
         rows = self._fetchall(
-            "SELECT day, updated_at, updated_by FROM report_drafts"
+            "SELECT day, updated_at, updated_by, hours FROM report_drafts"
             " ORDER BY updated_at DESC LIMIT ?", (int(limit),))
-        return [{"day": row[0], "updated_at": row[1], "updated_by": row[2]}
+        return [{"day": row[0], "updated_at": row[1], "updated_by": row[2],
+                 "hours": row[3] or ""}
                 for row in rows]
 
     # ---------- 工单（改善措施）----------

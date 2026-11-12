@@ -1048,7 +1048,15 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 50
         items = list_reports(self.app.storage, day=day, limit=limit)
-        self._json({"reports": items,
+        drafts = [
+            {"id": None, "draft": True, "day": item["day"],
+             "hours": item.get("hours") or "", "stations": 0, "products": 0, "ng": 0,
+             "xlsx_size": 0, "pdf_size": 0, "saved_xlsx": False, "saved_pdf": False,
+             "created_at": item.get("updated_at"), "updated_by": item.get("updated_by")}
+            for item in self.app.storage.list_draft_days(limit=limit)
+            if not day or item["day"] == day
+        ]
+        self._json({"reports": drafts + items,
                     "stats": self.app.storage.report_storage_stats()})
 
     def _api_report_file(self, report_id: str, query: dict) -> None:

@@ -1030,8 +1030,24 @@ async function loadReports() {
     state.reports = data.reports;
     const stats = data.stats || {};
     $('#storageStats').textContent =
-      `共 ${stats.count || 0} 份 / ${((stats.bytes || 0) / 1048576).toFixed(1)} MB`;
-    $('#reportBody').innerHTML = data.reports.map((report) => `<tr>
+      `共 ${stats.count || 0} 份 / ${((stats.bytes || 0) / 1048576).toFixed(1)} MB` +
+      (data.reports.some((r) => r.draft) ? `（含草稿 ${data.reports.filter((r) => r.draft).length} 份）` : '');
+    $('#reportBody').innerHTML = data.reports.map((report) => {
+      if (report.draft) {
+        return `<tr class="draft-row">
+          <td><span class="badge draft">草稿</span></td>
+          <td>${esc(report.day)}</td>
+          <td>${esc(report.hours || '')}</td>
+          <td class="num">—</td>
+          <td class="num">—</td>
+          <td>—</td><td>—</td>
+          <td>${esc(String(report.created_at || '').replace('T', ' ').slice(0, 19))}</td>
+          <td>
+            <a href="#" data-draft-edit="${esc(report.day)}">继续编辑</a> ·
+            <a href="#" data-draft-delete="${esc(report.day)}">删除草稿</a>
+          </td></tr>`;
+      }
+      return `<tr>
       <td>${report.id}</td>
       <td>${esc(report.day)}</td>
       <td>${esc(report.hours || '')}</td>
@@ -1046,7 +1062,26 @@ async function loadReports() {
         <a href="#" data-action="export" data-id="${report.id}">重新落盘</a> ·
         <a href="#" data-action="open" data-id="${report.id}">打开文件</a> ·
         <a href="#" data-action="delete" data-id="${report.id}">删除</a>
-      </td></tr>`).join('') || '<tr><td colspan="9" class="hint">暂无存档</td></tr>';
+      </td></tr>`;
+    }).join('') || '<tr><td colspan="9" class="hint">暂无存档</td></tr>';
+    $$('#reportBody [data-draft-edit]').forEach((node) => {
+      node.addEventListener('click', (event) => {
+        event.preventDefault();
+        window.location.search = '?date=' + encodeURIComponent(node.dataset.draftEdit);
+      });
+    });
+    $$('#reportBody [data-draft-delete]').forEach((node) => {
+      node.addEventListener('click', async (event) => {
+        event.preventDefault();
+        const draftDay = node.dataset.draftDelete;
+        if (!confirm(`确认删除 ${draftDay} 的草稿？`)) return;
+        try {
+          await api(`/api/draft?date=${encodeURIComponent(draftDay)}`, { method: 'DELETE' });
+          toast('草稿已删除');
+          loadReports();
+        } catch (err) { toast(err.message, 4000); }
+      });
+    });
     $$('#reportBody [data-action]').forEach((node) => {
       node.addEventListener('click', (event) => {
         event.preventDefault();
