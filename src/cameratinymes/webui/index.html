@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/webui/style.css">
 </head>
 <body>
+<div id="busyBar" aria-hidden="true"></div>
 <div class="app">
   <header class="topbar">
     <div class="title-row">
@@ -41,13 +42,17 @@
   </header>
 
   <main class="workbench" id="workbench">
-    <aside class="stations" id="stationList"></aside>
+    <aside class="stations" id="stationList">
+      <div class="loading"><span class="spinner"></span>正在加载相机数据…</div>
+    </aside>
     <section class="images">
       <div class="cam-head" id="camHead">
         <h2>选择左侧工站</h2>
         <span class="meta">勾选小时并选择相机后，这里显示 NG 图片</span>
       </div>
-      <div class="cards" id="cardGrid"></div>
+      <div class="cards" id="cardGrid">
+        <div class="loading"><span class="spinner"></span>正在载入工站数据…</div>
+      </div>
     </section>
     <aside class="reason">
       <h3>原因分析及改造解决方案</h3>
@@ -128,6 +133,7 @@
         <select id="okngDate"></select>
         <input type="date" id="okngDateInput">
         <button class="mini" id="okngRefresh">刷新</button>
+        <button class="mini" id="okngExport">导出 Excel</button>
         <label class="chk"><input type="checkbox" id="okngAuto"> 自动刷新(60s)</label>
         <span class="hint" id="okngSummary"></span>
         <span class="spacer"></span>

@@ -9,6 +9,9 @@ const TAG_ORDER = ['misjudge', 'product', 'external'];
 const STATUS_TEXT = { open: '开启中', in_progress: '进行中', done: '已完成', closed: '已关闭' };
 const STATION_ORDER = (a, b) => String(a.station).localeCompare(String(b.station), 'zh-CN', { numeric: true });
 
+/* 汇总请求序号：小时快速切换时丢弃过期响应，避免旧数据覆盖新数据 */
+let summarySeq = 0;
+
 const state = {
   cfg: null,
   dates: [],
@@ -17,6 +20,7 @@ const state = {
   urlHadHours: false,
   wantTasks: false,
   stations: [],
+  summaryLoading: false,
   current: null,
   detail: null,
   reasonAuto: '',
@@ -91,21 +95,50 @@ function toast(message, ms = 2600) {
   setTimeout(() => node.remove(), ms);
 }
 
+/* 任意 API 请求进行中时显示顶部进度条，让界面「在处理」可见 */
+let busyCount = 0;
+let busyTimer = null;
+
+function busyStart() {
+  busyCount += 1;
+  if (busyCount > 1) return;
+  clearTimeout(busyTimer);
+  busyTimer = setTimeout(() => {
+    if (busyCount) $('#busyBar').classList.add('on');
+  }, 150);
+}
+
+function busyEnd() {
+  busyCount = Math.max(0, busyCount - 1);
+  if (busyCount) return;
+  clearTimeout(busyTimer);
+  $('#busyBar').classList.remove('on');
+}
+
+function loadingHtml(text) {
+  return `<div class="loading"><span class="spinner"></span>${esc(text)}</div>`;
+}
+
 async function api(path, options = {}) {
   const opts = Object.assign({ headers: {} }, options);
   if (opts.body && typeof opts.body === 'string') {
     opts.headers['Content-Type'] = 'application/json';
   }
-  const res = await fetch(path, opts);
-  const type = res.headers.get('Content-Type') || '';
-  const data = type.includes('application/json') ? await res.json() : await res.text();
-  if (!res.ok) {
-    const error = new Error((data && data.error) || res.statusText);
-    error.status = res.status;
-    error.data = data;
-    throw error;
+  busyStart();
+  try {
+    const res = await fetch(path, opts);
+    const type = res.headers.get('Content-Type') || '';
+    const data = type.includes('application/json') ? await res.json() : await res.text();
+    if (!res.ok) {
+      const error = new Error((data && data.error) || res.statusText);
+      error.status = res.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
+  } finally {
+    busyEnd();
   }
-  return data;
 }
 
 function setSaveState(text, isError) {
@@ -142,6 +175,10 @@ async function boot() {
 
   fillStatic();
   renderHours();
+  // 先用配置里的工站/相机渲染骨架，等 /api/summary 期间不出现空白
+  state.stations = stationSkeleton();
+  state.summaryLoading = true;
+  renderStations();
   let draft = null;
   try {
     const res = await api('/api/draft?date=' + state.day);
@@ -270,6 +307,7 @@ function wireStatic() {
     loadOkng();
   });
   $('#okngRefresh').addEventListener('click', loadOkng);
+  $('#okngExport').addEventListener('click', exportOkng);
   $('#okngAuto').addEventListener('change', () => {
     if (okngTimer) { clearInterval(okngTimer); okngTimer = null; }
     if ($('#okngAuto').checked) {
@@ -303,6 +341,18 @@ function debounce(fn, ms) {
 
 /* ---------- 工站 / 汇总 ---------- */
 
+/* 配置里的工站结构（相机名为字符串）→ 渲染用的骨架数据，NG 计数先置 0 */
+function stationSkeleton() {
+  return (state.cfg?.stations || []).map((station) => ({
+    station: station.station,
+    station_name: station.station_name,
+    ng: 0,
+    cameras: (station.cameras || []).map((name) => ({
+      camera: name, note: '', total: 0, ok: 0, ng: 0, tags: {},
+    })),
+  }));
+}
+
 function scheduleRefresh() {
   clearTimeout(state.refreshTimer);
   state.refreshTimer = setTimeout(refreshSummary, 300);
@@ -311,12 +361,18 @@ function scheduleRefresh() {
 async function refreshSummary() {
   if (!state.hours.length) {
     state.stations = [];
+    state.summaryLoading = false;
     renderStations();
     setSaveState('未选择统计小时', true);
     return;
   }
+  const seq = ++summarySeq;
+  state.summaryLoading = true;
+  renderStations();
   try {
     const data = await api(`/api/summary?date=${state.day}&hours=${state.hours.join(',')}`);
+    if (seq !== summarySeq) return;   // 期间又发起新请求，丢弃过期结果
+    state.summaryLoading = false;
     state.summary = data;
     state.stations = data.stations.slice().sort(STATION_ORDER);
     (data.warnings || []).forEach((w) => toast(w, 4000));
@@ -329,6 +385,9 @@ async function refreshSummary() {
       }
     }
   } catch (err) {
+    if (seq !== summarySeq) return;
+    state.summaryLoading = false;
+    renderStations();
     setSaveState('统计失败：' + err.message, true);
   }
 }
@@ -336,10 +395,15 @@ async function refreshSummary() {
 function renderStations() {
   const box = $('#stationList');
   if (!state.stations.length) {
-    box.innerHTML = '<div class="hint" style="padding:10px">没有可用工站，请检查小时勾选。</div>';
+    box.innerHTML = state.summaryLoading
+      ? loadingHtml('正在加载相机数据…')
+      : '<div class="hint" style="padding:10px">没有可用工站，请检查小时勾选。</div>';
     return;
   }
-  box.innerHTML = state.stations.map((station) => {
+  const pending = state.summaryLoading
+    ? '<div class="loading"><span class="spinner"></span>正在统计 NG 数据…</div>'
+    : '';
+  box.innerHTML = pending + state.stations.map((station) => {
     const collapsed = state.stationCollapsed[station.station];
     const cameras = station.cameras.map((cam) => {
       const active = cam.camera === state.current ? 'active' : '';
@@ -377,7 +441,7 @@ async function selectCamera(camera) {
   flushReason();
   state.current = camera;
   renderStations();
-  $('#cardGrid').innerHTML = '<div class="hint">正在载入…</div>';
+  $('#cardGrid').innerHTML = loadingHtml('正在载入相机数据…');
   try {
     const detail = await api(`/api/station/${enc(camera)}?date=${state.day}`
       + `&hours=${state.hours.join(',')}&limit=${state.cfg.ng_images_per_station}`);
@@ -1058,12 +1122,46 @@ async function loadOkng() {
   }
   const day = okngDay();
   const table = $('#okngTable');
+  if (!table.querySelector('table')) table.innerHTML = loadingHtml('正在加载 OK/NG 数据…');
   try {
     const data = await api('/api/okng?date=' + encodeURIComponent(day));
     renderOkng(day, data.cameras || []);
   } catch (err) {
     table.innerHTML = `<div class="hint" style="padding:20px">加载失败：${esc(err.message)}</div>`;
     $('#okngSummary').textContent = '';
+  }
+}
+
+/** 导出当前所选日期的 OK/NG 小时报表（xlsx，含合格率与逐小时明细两张表）。 */
+async function exportOkng() {
+  const day = okngDay();
+  const button = $('#okngExport');
+  const text = button.textContent;
+  button.disabled = true;
+  button.textContent = '生成中…';
+  busyStart();
+  try {
+    const res = await fetch(`/api/okng?date=${enc(day)}&format=xlsx`);
+    if (!res.ok) {
+      let reason = res.statusText;
+      try { reason = (await res.json()).error || reason; } catch (e) { /* 非 JSON 错误体 */ }
+      throw new Error(reason);
+    }
+    const url = URL.createObjectURL(await res.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `OKNG_${day}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast(`已导出 ${day} 的 OK/NG 报表`);
+  } catch (err) {
+    toast('导出失败：' + err.message, 4000);
+  } finally {
+    busyEnd();
+    button.disabled = false;
+    button.textContent = text;
   }
 }
 

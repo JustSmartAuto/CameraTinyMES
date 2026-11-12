@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from .config import (AppSettings, CameraConfig, DEFAULT_IMAGE_CELL, ReportConfig,
                      image_cell, result_cell, result_specs, result_tokens,
                      save_settings)
-from .okng import hourly_okng
+from .okng import hourly_okng, okng_xlsx
 from .report import (MAX_IMAGE_SLOTS, CameraStat, ReportOptions,
                      auto_pick, auto_reason, collect_stats, hour_ranges, ranges_iso,
                      station_of)
@@ -781,6 +781,14 @@ class _Handler(BaseHTTPRequestHandler):
     def _api_okng(self, query: dict) -> None:
         day = self._day(query)
         cameras = hourly_okng(self.app.storage, day.isoformat(), self.app.cameras)
+        if (query.get("format") or [""])[0].lower() == "xlsx":
+            data, filename = okng_xlsx(day.isoformat(), cameras)
+            self._send(
+                200, data,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                {"Content-Disposition":
+                 "attachment; filename=\"okng.xlsx\"; filename*=UTF-8''%s" % quote(filename)})
+            return
         self._json({"date": day.isoformat(), "cameras": cameras})
 
     def _api_config(self) -> None:

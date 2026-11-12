@@ -98,3 +98,121 @@ def hourly_okng(storage, day: str, cameras=()) -> list[dict]:
         ng = sum(h["ng"] for h in cam["hours"].values())
         result.append({**cam, "camera": name, "total": ok + ng, "ok": ok, "ng": ng})
     return result
+
+
+def _grade(ok: int, ng: int) -> str:
+    """与网页一致的分档：none 无数据 / full 全 OK / warn 有 NG / bad NG≥20%。"""
+    if not ok + ng:
+        return "none"
+    if ng <= 0:
+        return "full"
+    return "warn" if ok / (ok + ng) >= 0.8 else "bad"
+
+
+def okng_xlsx(day: str, cameras: list[dict]) -> tuple[bytes, str]:
+    """某天逐小时 OK/NG 的 Excel 报表，返回 (xlsx 内容, 文件名)。
+
+    表 1「小时合格率」：相机 × 00~23 + 合计，底色按合格率分档（与网页一致）；
+    表 2「逐小时明细」：长表（相机/小时/OK/NG/判定数/合格率），便于二次透视。
+    """
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    hours = [f"{h:02d}" for h in range(24)]
+    thin = Side(style="thin", color="BFBFBF")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center")
+    head_font = Font(bold=True, color="1F2D3D")
+    head_fill = PatternFill("solid", fgColor="E6ECF2")
+    fills = {"full": "E2F0D9", "warn": "FFF2CC", "bad": "FFC7CE", "none": "F5F5F5"}
+    last_col = len(hours) + 2
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "小时合格率"
+    ws.cell(row=1, column=1, value=f"小时 OK/NG 率 · {day}").font = Font(bold=True, size=14)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 24
+
+    for col, text in enumerate(["相机", *hours, "合计"], start=1):
+        cell = ws.cell(row=2, column=col, value=text)
+        cell.font, cell.fill, cell.border, cell.alignment = head_font, head_fill, border, center
+    ws.row_dimensions[2].height = 18
+
+    row = 3
+    g_ok = g_ng = 0
+    for cam in cameras:
+        ok_all, ng_all = int(cam.get("ok") or 0), int(cam.get("ng") or 0)
+        g_ok += ok_all
+        g_ng += ng_all
+        name = ws.cell(row=row, column=1, value=cam.get("camera"))
+        name.border = border
+        for col, hh in enumerate(hours, start=2):
+            bucket = (cam.get("hours") or {}).get(hh) or {}
+            ok, ng = int(bucket.get("ok") or 0), int(bucket.get("ng") or 0)
+            cell = ws.cell(row=row, column=col)
+            cell.border, cell.alignment = border, center
+            cell.fill = PatternFill("solid", fgColor=fills[_grade(ok, ng)])
+            if ok + ng:
+                cell.value = ok / (ok + ng)
+                cell.number_format = "0.0%"
+        cell = ws.cell(row=row, column=last_col)
+        cell.border, cell.alignment = border, center
+        if ok_all + ng_all:
+            cell.value = ok_all / (ok_all + ng_all)
+            cell.number_format = "0.0%"
+        row += 1
+
+    total = ws.cell(row=row, column=1, value="合计")
+    total.font, total.fill, total.border, total.alignment = head_font, head_fill, border, center
+    for col, hh in enumerate(hours, start=2):
+        ok = sum(int(((c.get("hours") or {}).get(hh) or {}).get("ok") or 0) for c in cameras)
+        ng = sum(int(((c.get("hours") or {}).get(hh) or {}).get("ng") or 0) for c in cameras)
+        cell = ws.cell(row=row, column=col)
+        cell.border, cell.alignment = border, center
+        cell.fill = PatternFill("solid", fgColor=fills[_grade(ok, ng)])
+        if ok + ng:
+            cell.value = ok / (ok + ng)
+            cell.number_format = "0.0%"
+    cell = ws.cell(row=row, column=last_col)
+    cell.font, cell.fill, cell.border, cell.alignment = head_font, head_fill, border, center
+    if g_ok + g_ng:
+        cell.value = g_ok / (g_ok + g_ng)
+        cell.number_format = "0.0%"
+
+    ws.column_dimensions["A"].width = 20
+    for col in range(2, last_col + 1):
+        ws.column_dimensions[get_column_letter(col)].width = 8 if col == last_col else 6.5
+    ws.freeze_panes = "B3"
+
+    detail = wb.create_sheet("逐小时明细")
+    for col, text in enumerate(["相机", "小时", "OK", "NG", "判定数", "合格率"], start=1):
+        cell = detail.cell(row=1, column=col, value=text)
+        cell.font, cell.fill, cell.border, cell.alignment = head_font, head_fill, border, center
+    line = 2
+    for cam in cameras:
+        for hh in hours:
+            bucket = (cam.get("hours") or {}).get(hh) or {}
+            ok, ng = int(bucket.get("ok") or 0), int(bucket.get("ng") or 0)
+            if not ok + ng:
+                continue
+            values = [cam.get("camera"), hh, ok, ng, ok + ng, ok / (ok + ng)]
+            for col, value in enumerate(values, start=1):
+                cell = detail.cell(row=line, column=col, value=value)
+                cell.border = border
+                if col in (2, 3, 4, 5):
+                    cell.alignment = center
+                if col == 6:
+                    cell.number_format = "0.0%"
+            line += 1
+    for col, width in zip("ABCDEF", (20, 8, 8, 8, 10, 10)):
+        detail.column_dimensions[col].width = width
+    detail.freeze_panes = "A2"
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue(), f"OKNG_{day}.xlsx"
