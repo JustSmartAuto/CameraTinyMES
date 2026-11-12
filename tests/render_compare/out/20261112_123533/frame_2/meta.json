@@ -1,0 +1,15 @@
+{
+ "host": "192.168.10.55",
+ "port": 80,
+ "viewport_width": 1964,
+ "viewport_height": 1503,
+ "image_width": 1964,
+ "image_height": 1503,
+ "image_offset_y": 0,
+ "uses_xy_coordinates": false,
+ "sources": {
+  "image": "/cam0/img/001000000018151",
+  "svg": "/cam0/app/views/001000000006229/layers/1/svg",
+  "graphics": "/cam0/app/views/001000000006229/layers/2/graphics"
+ }
+}

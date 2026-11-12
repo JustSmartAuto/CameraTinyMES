@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" font-family="arial">
+<defs>
+<marker id="cam0000000002769d3" viewBox="0 0 75.000000 75.000000" refX="37.500000" refY="37.500000" markerUnits="userSpaceOnUse" markerWidth="75.000000" markerHeight="75.000000" orient="0">
+<g stroke-width="6.250000" stroke="#32CD32" fill="transparent">
+<path d="M 5.000000 37.500000 h 27.500000 M 70.000000 37.500000 h -27.500000 M 37.500000 5.000000 v 27.500000 M 37.500000 70.000000 v -27.500000"/>
+<circle cx="37.500000" cy="37.500000" r="32.500000"/>
+</g>
+</marker>
+
+</defs>
+<style>
+	.s-cam0000000000003	{ font-size:10.00pt;font-family:Arial; }
+	.s-cam0000000000005	{ font-size:15.00pt;font-family:Arial; }
+	.s-cam0000000000004	{ font-size:25.00pt;font-family:Arial; }
+	.ds-cam0000000000002	{ font-size:9.00pt;stroke-width:2.00; }
+</style>
+<g data-c="A0" class="ds-cam0000000000002"></g>
+<g data-c="B4" class="ds-cam0000000000002"></g>
+<g data-c="B8" class="ds-cam0000000000002"></g>
+<g data-c="G12" class="s-cam0000000000004"><text x="10" y="0" style="fill:#32CD32" dominant-baseline="hanging" >2026年11月12日12:35:31</text>
+</g>
+<g data-c="A14" class="ds-cam0000000000002"></g>
+<g data-c="E14" class="ds-cam0000000000002"></g>
+<g data-c="J37" class="s-cam0000000000005"><text x="0" y="300" style="fill:#FF0000" dominant-baseline="hanging" >焊缝高度：0mm：NG</text>
+</g>
+<g data-c="J38" class="s-cam0000000000005"><text x="0" y="400" style="fill:#FF0000" dominant-baseline="hanging" >外-爆破膜同心圆检测：0mm：NG</text>
+</g>
+<g data-c="J39" class="s-cam0000000000005"><text x="0" y="500" style="fill:#FF0000" dominant-baseline="hanging" >气泡断焊：NG</text>
+</g>
+<g data-c="J40" class="s-cam0000000000005"><text x="0" y="600" style="fill:#FF0000" dominant-baseline="hanging" >内-焊缝同心圆检测：0mm:NG</text>
+</g>
+<g data-c="J41" class="s-cam0000000000005"><text x="0" y="700" style="fill:#FF0000" dominant-baseline="hanging" >焊缝宽度最小值：0mm:NG</text>
+</g>
+<g data-c="J42" class="s-cam0000000000005"><text x="0" y="800" style="fill:#FF0000" dominant-baseline="hanging" >焊缝宽度最大值：0mm:NG</text>
+</g>
+<g data-c="J43" class="s-cam0000000000005"><text x="0" y="900" style="fill:#FF0000" dominant-baseline="hanging" >焊缝同心圆直径：0mm:NG</text>
+</g>
+<g data-c="J44" class="s-cam0000000000005"><text x="0" y="1000" style="fill:#FF0000" dominant-baseline="hanging" >划痕检测：NG</text>
+</g>
+<g data-c="M59" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M60" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M61" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M62" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M63" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M64" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M65" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M66" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M67" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M68" class="ds-cam0000000000002"><path marker-end="url(#cam0000000002769d3)" d="M 956.718506 1482.808228 h 0" stroke="#32CD32" fill="none"/>
+</g>
+<g data-c="M69" class="ds-cam0000000000002"></g>
+<g data-c="X69" class="ds-cam0000000000002"></g>
+<g data-c="X88" class="ds-cam0000000000002"></g>
+<g data-c="X102" class="ds-cam0000000000002"></g>
+<g data-c="X116" class="ds-cam0000000000002"></g>
+<g data-c="A120" class="ds-cam0000000000002"></g>
+<g data-c="A121" class="ds-cam0000000000002"></g>
+<g data-c="A122" class="ds-cam0000000000002"></g>
+<g data-c="A123" class="ds-cam0000000000002"></g>
+<g data-c="A124" class="ds-cam0000000000002"></g>
+<g data-c="A125" class="ds-cam0000000000002"></g>
+<g data-c="A126" class="ds-cam0000000000002"></g>
+<g data-c="A127" class="ds-cam0000000000002"></g>
+<g data-c="A128" class="ds-cam0000000000002"></g>
+<g data-c="A129" class="ds-cam0000000000002"></g>
+<g data-c="X130" class="ds-cam0000000000002"></g>
+<g data-c="B135" class="ds-cam0000000000002"></g>
+<g data-c="B136" class="ds-cam0000000000002"></g>
+<g data-c="A159" class="ds-cam0000000000002"></g>
+<g data-c="C159" class="ds-cam0000000000002"></g>
+<g data-c="A161" class="ds-cam0000000000002"></g>
+<g data-c="E161" class="ds-cam0000000000002"></g>
+<g data-c="H163" class="ds-cam0000000000002"></g>
+<g data-c="I163" class="ds-cam0000000000002"></g>
+<g data-c="H164" class="ds-cam0000000000002"></g>
+<g data-c="I164" class="ds-cam0000000000002"></g>
+<g data-c="H165" class="ds-cam0000000000002"></g>
+<g data-c="I165" class="ds-cam0000000000002"></g>
+<g data-c="A167" class="ds-cam0000000000002"></g>
+<g data-c="A177" class="editable ds-cam0000000000002"></g>
+<g data-c="A178" class="ds-cam0000000000002"></g>
+<g data-c="D178" class="ds-cam0000000000002"></g>
+<g data-c="C183" class="ds-cam0000000000002"></g>
+<g data-c="I183" class="ds-cam0000000000002"></g>
+<g data-c="C185" class="ds-cam0000000000002"></g>
+<g data-c="D185" class="ds-cam0000000000002"></g>
+<g data-c="C186" class="ds-cam0000000000002"></g>
+<g data-c="D186" class="ds-cam0000000000002"></g>
+<g data-c="F186" class="ds-cam0000000000002"></g>
+<g data-c="C191" class="ds-cam0000000000002"></g>
+<g data-c="D191" class="ds-cam0000000000002"></g>
+<g data-c="E191" class="ds-cam0000000000002"></g>
+<g data-c="C193" class="ds-cam0000000000002"></g>
+<g data-c="I193" class="ds-cam0000000000002"></g>
+<g data-c="K193" class="ds-cam0000000000002"></g>
+<g data-c="C195" class="ds-cam0000000000002"></g>
+<g data-c="I195" class="ds-cam0000000000002"></g>
+<g data-c="K195" class="ds-cam0000000000002"></g>
+</svg>
