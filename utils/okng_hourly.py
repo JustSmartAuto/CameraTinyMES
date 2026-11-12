@@ -277,13 +277,34 @@ tfoot td { background: var(--chrome); font-weight: bold; }
   var $ = function (id) { return document.getElementById(id); };
   var dateEl = $("date"), listEl = $("daylist"), contentEl = $("content");
   var autoEl = $("auto"), timer = null;
+  var followToday = null, midnightTimer = null;
 
-  function dayParam() { return dateEl.value || new Date().toISOString().slice(0, 10); }
+  function dayParam() { return dateEl.value || localToday(); }
 
   function localToday() {
     var d = new Date();
     return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")
          + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  /* 停留在「今天」时切到当前日期，返回是否跨天 */
+  function syncToday() {
+    if (!followToday) return false;
+    var t = localToday();
+    if (dateEl.value === t) return false;
+    dateEl.value = t;
+    return true;
+  }
+
+  /* 本地 0 点自动切到新日期并重新排程，支持页面跨天常开 */
+  function scheduleMidnight() {
+    if (midnightTimer) clearTimeout(midnightTimer);
+    var now = new Date();
+    var next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+    midnightTimer = setTimeout(function () {
+      if (syncToday()) { loadDays(); load(); }
+      scheduleMidnight();
+    }, next - now);
   }
 
   function rateClass(rate, ng) {
@@ -352,6 +373,8 @@ tfoot td { background: var(--chrome); font-weight: bold; }
   }
 
   function load() {
+    if (followToday === null) followToday = dateEl.value === localToday();
+    syncToday();
     document.body.classList.add("refreshing");
     fetch("/api/data?date=" + encodeURIComponent(dayParam()))
       .then(function (r) { return r.json(); })
@@ -375,12 +398,23 @@ tfoot td { background: var(--chrome); font-weight: bold; }
     }).catch(function () {});
   }
 
-  dateEl.addEventListener("change", load);
+  dateEl.addEventListener("change", function () {
+    followToday = dateEl.value === localToday();
+    load();
+  });
   listEl.addEventListener("change", function () {
-    if (listEl.value) { dateEl.value = listEl.value; load(); }
+    if (listEl.value) {
+      dateEl.value = listEl.value;
+      followToday = dateEl.value === localToday();
+      load();
+    }
   });
   $("refresh").addEventListener("click", load);
-  $("today").addEventListener("click", function () { dateEl.value = localToday(); load(); });
+  $("today").addEventListener("click", function () {
+    dateEl.value = localToday();
+    followToday = true;
+    load();
+  });
   autoEl.addEventListener("change", function () {
     if (timer) { clearInterval(timer); timer = null; }
     if (autoEl.checked) timer = setInterval(load, 60000);
@@ -388,6 +422,7 @@ tfoot td { background: var(--chrome); font-weight: bold; }
 
   if (!dateEl.value) dateEl.value = localToday();
   loadDays();
+  scheduleMidnight();
   load();
 })();
 </script>

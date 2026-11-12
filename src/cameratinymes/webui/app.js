@@ -261,15 +261,20 @@ function wireStatic() {
   $('#ticketStatusFilter').addEventListener('change', loadTickets);
   $('#ticketSearch').addEventListener('input', debounce(loadTickets, 300));
   $('#okngDate').addEventListener('change', () => {
-    $('#okngDateInput').value = $('#okngDate').value;
+    $('#okngDateInput').value = $('#okngDate').value || todayStr();
+    okngFollowToday = $('#okngDateInput').value === todayStr();
     loadOkng();
   });
-  $('#okngDateInput').addEventListener('change', loadOkng);
+  $('#okngDateInput').addEventListener('change', () => {
+    okngFollowToday = $('#okngDateInput').value === todayStr();
+    loadOkng();
+  });
   $('#okngRefresh').addEventListener('click', loadOkng);
   $('#okngAuto').addEventListener('change', () => {
     if (okngTimer) { clearInterval(okngTimer); okngTimer = null; }
     if ($('#okngAuto').checked) okngTimer = setInterval(loadOkng, 60000);
   });
+  scheduleOkngMidnight();
   $('#taskHead').addEventListener('click', () => {
     $('#taskPanel').classList.toggle('collapsed');
     $('#taskToggle').textContent = $('#taskPanel').classList.contains('collapsed') ? '展开' : '收起';
@@ -1003,21 +1008,51 @@ async function reportAction(action, id) {
 
 let okngTimer = null;
 let okngDatesLoaded = false;
+let okngFollowToday = null;   // null=未初始化；true=停留在「今天」，跨 0 点自动切换
+let okngMidnightTimer = null;
 
 function okngDay() {
   return $('#okngDateInput').value || state.day || state.cfg?.today || todayStr();
 }
 
+/** 停留在「今天」时把日期同步到当前日期；返回是否发生了跨天切换。 */
+function okngSyncToday() {
+  if (!okngFollowToday) return false;
+  const today = todayStr();
+  if ($('#okngDateInput').value === today) return false;
+  $('#okngDateInput').value = today;
+  const hasOption = Array.from($('#okngDate').options).some((o) => o.value === today);
+  $('#okngDate').value = hasOption ? today : '';
+  return true;
+}
+
+/** 在下一个本地 0 点切换日期并重新排程，支持页面跨天常开。 */
+function scheduleOkngMidnight() {
+  if (okngMidnightTimer) clearTimeout(okngMidnightTimer);
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+  okngMidnightTimer = setTimeout(() => {
+    if (okngSyncToday()) {
+      okngDatesLoaded = false;  // 新一天需重新拉取有数据的日期列表
+      loadOkng();
+    }
+    scheduleOkngMidnight();
+  }, next - now);
+}
+
 async function loadOkng() {
+  if (!$('#okngDateInput').value) $('#okngDateInput').value = okngDay();
+  if (okngFollowToday === null) okngFollowToday = okngDay() === todayStr();
+  okngSyncToday();
   if (!okngDatesLoaded) {
     okngDatesLoaded = true;
     try {
       const data = await api('/api/dates');
       $('#okngDate').innerHTML = '<option value="">— 最近有数据日期 —</option>'
         + (data.dates || []).map((d) => `<option value="${d}">${d}</option>`).join('');
+      if (okngFollowToday) $('#okngDate').value = todayStr();
     } catch (err) { /* 日期列表失败不阻塞 */ }
   }
-  if (!$('#okngDateInput').value) $('#okngDateInput').value = okngDay();
   const day = okngDay();
   const table = $('#okngTable');
   try {
