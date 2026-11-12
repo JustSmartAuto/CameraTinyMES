@@ -370,6 +370,26 @@ tfoot td { background: var(--chrome); font-weight: bold; }
     $("st-total").textContent = "样本: " + data.cameras.reduce(function (s, c) { return s + c.total; }, 0);
     $("st-msg").textContent = data.cameras.length + " 台相机";
     $("st-time").textContent = "更新于 " + data.generated_at;
+    scrollToNow();
+  }
+
+  /* 自动刷新时把横向视图滚到当前小时，避免最新数据在右侧看不见 */
+  function scrollToNow() {
+    if (!autoEl.checked) return;
+    var box = contentEl;   /* #content 同时是 .tablewrap 横向滚动容器 */
+    var head = contentEl.querySelector("thead tr");
+    if (!box || !head || !box.clientWidth) return;
+    var hour = ("0" + new Date().getHours()).slice(-2);
+    var cell = null;
+    for (var i = 0; i < head.children.length; i++) {
+      if (head.children[i].textContent.trim() === hour) { cell = head.children[i]; break; }
+    }
+    if (!cell) return;
+    /* 首列「相机」是 sticky 的，居中计算要扣掉它的宽度 */
+    var camCol = head.querySelector("th.cam-h");
+    var padLeft = camCol ? camCol.offsetWidth : 0;
+    var delta = cell.getBoundingClientRect().left - box.getBoundingClientRect().left - padLeft;
+    box.scrollLeft += delta - (box.clientWidth - padLeft - cell.offsetWidth) / 2;
   }
 
   function load() {
@@ -417,7 +437,10 @@ tfoot td { background: var(--chrome); font-weight: bold; }
   });
   autoEl.addEventListener("change", function () {
     if (timer) { clearInterval(timer); timer = null; }
-    if (autoEl.checked) timer = setInterval(load, 60000);
+    if (autoEl.checked) {
+      timer = setInterval(load, 60000);
+      scrollToNow();
+    }
   });
 
   if (!dateEl.value) dateEl.value = localToday();

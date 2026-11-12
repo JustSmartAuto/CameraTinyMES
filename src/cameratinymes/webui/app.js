@@ -272,7 +272,10 @@ function wireStatic() {
   $('#okngRefresh').addEventListener('click', loadOkng);
   $('#okngAuto').addEventListener('change', () => {
     if (okngTimer) { clearInterval(okngTimer); okngTimer = null; }
-    if ($('#okngAuto').checked) okngTimer = setInterval(loadOkng, 60000);
+    if ($('#okngAuto').checked) {
+      okngTimer = setInterval(loadOkng, 60000);
+      okngScrollToNow();
+    }
   });
   scheduleOkngMidnight();
   $('#taskHead').addEventListener('click', () => {
@@ -1069,6 +1072,22 @@ function okngClass(rate, ng) {
   return rate >= 0.8 ? 'warn' : 'bad';
 }
 
+// 自动刷新时把横向视图滚到当前小时，避免最新数据在右侧看不见
+function okngScrollToNow() {
+  if (!$('#okngAuto').checked) return;
+  const box = $('#okngTable');
+  const head = box && box.querySelector('thead tr');
+  if (!head || !box.clientWidth) return;
+  const hour = String(new Date().getHours()).padStart(2, '0');
+  const cell = Array.from(head.children).find((th) => th.textContent.trim() === hour);
+  if (!cell) return;
+  // 首列「相机」是 sticky 的，居中计算要扣掉它的宽度
+  const camCol = head.querySelector('th.cam-h');
+  const padLeft = camCol ? camCol.offsetWidth : 0;
+  const delta = cell.getBoundingClientRect().left - box.getBoundingClientRect().left - padLeft;
+  box.scrollLeft += delta - (box.clientWidth - padLeft - cell.offsetWidth) / 2;
+}
+
 function renderOkng(day, cameras) {
   const hours = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
   const rows = [];
@@ -1108,6 +1127,7 @@ function renderOkng(day, cameras) {
     + `<span class="cnt">${gOk}/${gNg}</span></td></tr></tfoot></table>`);
   $('#okngTable').innerHTML = rows.join('');
   $('#okngSummary').textContent = `${day} · ${cameras.length} 台相机 · 判定样本 ${gJudged}`;
+  okngScrollToNow();
 }
 
 /* ---------- 工单列表 / 详情 ---------- */
