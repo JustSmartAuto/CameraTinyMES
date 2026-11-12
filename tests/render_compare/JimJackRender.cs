@@ -154,6 +154,8 @@ internal static class Program
 
                 using (WebClient web = new WebClient())
                 {
+                    // 相机响应不带 charset 时 WebClient 会按系统 ANSI(GBK) 解码，中文变乱码
+                    web.Encoding = Encoding.UTF8;
                     if (graphicsUrl != null)
                     {
                         File.WriteAllText(Path.Combine(frameDir, "graphics.json"),

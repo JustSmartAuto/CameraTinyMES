@@ -24,6 +24,8 @@ import re
 import urllib.request
 from io import BytesIO
 
+from .renderer import TEXT_SCALE
+
 log = logging.getLogger(__name__)
 
 # 入库与嵌入 xlsx 的图像最大宽度（原图 2448 宽，按此等比缩放，控制 BLOB 体积）
@@ -247,8 +249,8 @@ def _draw_graphic(draw, graphic: dict, k: float) -> bool:
         text = str(graphic.get("text") or "")
         if not text:
             return True  # 空文本，无需绘制
-        # 相机图形字号以 pt 标注（1pt≈1.333px），缩放后限制最小 9px 保证可读
-        size = max(9, int(round(float(graphic.get("fontSize") or 9) * 1.333 * k)))
+        # 字号换算与 SVG 路径共用 TEXT_SCALE（对齐相机 HMI 的显示大小）
+        size = max(9, int(round(float(graphic.get("fontSize") or 9) * TEXT_SCALE * k)))
         font = _font(size, _has_cjk(text))
         x = float(graphic.get("x") or 0) * k
         y = float(graphic.get("y") or 0) * k
@@ -340,6 +342,11 @@ def _rewrite_svg(svg_text: str, out_w: int, out_h: int,
         others = ' xmlns="http://www.w3.org/2000/svg"' + others
     new_tag = f'<svg{others} width="{out_w}" height="{out_h}" viewBox="{view_box}">'
     body = svg_text[match.end():]
+    # 相机 SVG 用 pt 声明字号，其数值与 GraphicsLayer 的 fontSize 相同；实测相机
+    # HMI 的实际显示字号约为该值的 TEXT_SCALE 倍，统一换算成 px 与图形路径一致
+    body = re.sub(r"font-size:\s*([\d.]+)\s*pt",
+                  lambda m: f"font-size:{float(m.group(1)) * TEXT_SCALE:.2f}px",
+                  body, flags=re.IGNORECASE)
     body = re.sub(r"<image\b[^>]*?/>", "", body, flags=re.IGNORECASE)
     body = re.sub(r"<image\b[^>]*>.*?</image>", "", body,
                   flags=re.IGNORECASE | re.DOTALL)

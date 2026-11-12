@@ -1,15 +1,14 @@
-"""渲染对比测试：使用 192.168.10.55 相机各渲染两张图片。
+"""渲染交叉验证：对同一台相机的同一批帧，分别用两套渲染逻辑出图。
 
-流程：
-1. 用 CameraHelperJimJack 的取图 + GDI+ 绘制链路（CvsInSight + GraphicsHelper）采集 2 帧并渲染；
-2. 用 CameraTinyMES 的 images.compose_render 对同一帧渲染（SVG 优先 + Graphics 兜底）。
+- CameraHelperJimJack：CvsInSight 取图 + GraphicsHelper.DrawGraphics（GDI+，视口 1/2）
+- CameraTinyMES：images.compose_render（相机 SVGLayer 优先，GraphicsLayer 兜底，640 宽）
 
 用法：
-    uv run python tests/render_compare/run_compare.py
+    uv run python tests/render_compare/run_compare.py --host 192.168.10.55
+    uv run python tests/render_compare/run_compare.py --host 192.168.10.145 --out tests/render_compare/out/cam145
 输出：
-    tests/render_compare/out/<时间戳>/frame_N/  原图、graphics.json、layer.svg、meta.json
-    tests/render_compare/out/<时间戳>/frame_N/jimjack_N.png
-    tests/render_compare/out/<时间戳>/ctm_svg_N.jpg / ctm_graphics_N.jpg
+    <out>/frame_N/  原图、graphics.json、layer.svg、meta.json、jimjack_N.png
+    <out>/frame_N/ctm_svg.jpg、ctm_graphics.jpg
 """
 
 from __future__ import annotations

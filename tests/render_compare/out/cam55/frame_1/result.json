@@ -1,18 +1,18 @@
 ﻿{
   "acqImageView": {
     "$type": "ViewRecord",
-    "id": 1000000006285.0,
-    "url": "/cam0/app/views/001000000006285",
+    "id": 1000000006301.0,
+    "url": "/cam0/app/views/001000000006301",
     "heightColor": null,
     "layers": [
       {
         "$type": "ImageLayer",
-        "url": "/cam0/img/001000000018250",
+        "url": "/cam0/img/001000000018278",
         "height": 1503,
         "image": {
           "$type": "Image",
-          "id": 1000000018250.0,
-          "url": "/cam0/img/001000000018250",
+          "id": 1000000018278.0,
+          "url": "/cam0/img/001000000018278",
           "frozen": true,
           "height": 1503,
           "mask": null,
@@ -44,13 +44,13 @@
       },
       {
         "$type": "SVGLayer",
-        "url": "/cam0/app/views/001000000006285/layers/1/svg",
+        "url": "/cam0/app/views/001000000006301/layers/1/svg",
         "contentType": 0,
         "transform": null
       },
       {
         "$type": "GraphicsLayer",
-        "url": "/cam0/app/views/001000000006285/layers/2/graphics"
+        "url": "/cam0/app/views/001000000006301/layers/2/graphics"
       }
     ],
     "profileRectangle": null,
@@ -63,8 +63,8 @@
   },
   "acqPointCloudView": {
     "$type": "ViewRecord",
-    "id": 1000000006284.0,
-    "url": "/cam0/app/views/001000000006284",
+    "id": 1000000006300.0,
+    "url": "/cam0/app/views/001000000006300",
     "heightColor": {
       "$type": "HeightColor",
       "end": [
@@ -103,7 +103,7 @@
             "isQuadMesh": true,
             "isScanTooFast": false,
             "laserEnabled": true,
-            "url": "/cam0/pc/000000000000685"
+            "url": "/cam0/pc/000000000000687"
           }
         ],
         "maxZ": 0.0,
@@ -111,7 +111,7 @@
       },
       {
         "$type": "3dGraphicsLayer",
-        "url": "/cam0/app/views/001000000006284/layers/1/graphics3d",
+        "url": "/cam0/app/views/001000000006300/layers/1/graphics3d",
         "graphics": []
       }
     ],
@@ -138,7 +138,7 @@
     {
       "$type": "HmiStringResult",
       "location": "J0",
-      "data": "11122026 12:39:13"
+      "data": "11122026 12:57:50"
     },
     {
       "$type": "HmiStringResult",
@@ -290,7 +290,7 @@
     {
       "$type": "HmiStringResult",
       "location": "F7",
-      "data": "11122026 12:39:13"
+      "data": "11122026 12:57:50"
     },
     {
       "$type": "HmiStringResult",
@@ -315,7 +315,7 @@
     {
       "$type": "HmiFloatResult",
       "location": "D8",
-      "data": 1709.0
+      "data": 1711.0
     },
     {
       "$type": "HmiFloatResult",
@@ -372,12 +372,12 @@
     {
       "$type": "HmiStringResult",
       "location": "G10",
-      "data": "12:39:13"
+      "data": "12:57:50"
     },
     {
       "$type": "HmiStringResult",
       "location": "G11",
-      "data": "2026年11月12日12:39:13"
+      "data": "2026年11月12日12:57:50"
     },
     {
       "$type": "HmiStringResult",
@@ -732,7 +732,7 @@
     {
       "$type": "HmiFloatResult",
       "location": "B23",
-      "data": 1331.0
+      "data": 1333.0
     },
     {
       "$type": "HmiFloatResult",
@@ -747,7 +747,7 @@
     {
       "$type": "HmiFloatResult",
       "location": "E23",
-      "data": 1331.0
+      "data": 1333.0
     },
     {
       "$type": "HmiButtonResult",
@@ -8105,7 +8105,7 @@
     {
       "$type": "HmiFloatResult",
       "location": "D161",
-      "data": 71.8901446464477
+      "data": 71.983152702237035
     },
     {
       "$type": "HmiStringResult",
@@ -8115,32 +8115,32 @@
     {
       "$type": "HmiFloatResult",
       "location": "F161",
-      "data": 4.4850703071160236
+      "data": 4.4657081186218477
     },
     {
       "$type": "HmiFloatResult",
       "location": "G161",
-      "data": 7.5555110395133136
+      "data": 7.5554748293693716
     },
     {
       "$type": "HmiFloatResult",
       "location": "H161",
-      "data": -2.0252347495456613
+      "data": -2.0244626983393941
     },
     {
       "$type": "HmiFloatResult",
       "location": "I161",
-      "data": 103.78068898688136
+      "data": 103.789784108858
     },
     {
       "$type": "HmiFloatResult",
       "location": "J161",
-      "data": 0.17802142997395465
+      "data": 0.16562494685993084
     },
     {
       "$type": "HmiFloatResult",
       "location": "K161",
-      "data": 61.897073109257711
+      "data": 46.332529477853164
     },
     {
       "$type": "HmiStringResult",
@@ -8420,7 +8420,7 @@
     {
       "$type": "HmiFloatResult",
       "location": "G168",
-      "data": 0.18988323863595724
+      "data": 0.23386399261653423
     },
     {
       "$type": "HmiStringResult",
@@ -8455,7 +8455,7 @@
     {
       "$type": "HmiFloatResult",
       "location": "G169",
-      "data": 0.024375853536184877
+      "data": 0.0270889257080853
     },
     {
       "$type": "HmiFloatResult",
@@ -10781,7 +10781,7 @@
       "data": ""
     }
   ],
-  "id": 807,
+  "id": 814,
   "jobStatus": 0,
   "jobTagVer": 3,
   "logicVer": 3,
@@ -10791,8 +10791,8 @@
       "$type": "View",
       "record": {
         "$type": "ViewRecord",
-        "id": 1000000006284.0,
-        "url": "/cam0/app/views/001000000006284",
+        "id": 1000000006300.0,
+        "url": "/cam0/app/views/001000000006300",
         "heightColor": {
           "$type": "HeightColor",
           "end": [
@@ -10831,7 +10831,7 @@
                 "isQuadMesh": true,
                 "isScanTooFast": false,
                 "laserEnabled": true,
-                "url": "/cam0/pc/000000000000685"
+                "url": "/cam0/pc/000000000000687"
               }
             ],
             "maxZ": 0.0,
@@ -10839,7 +10839,7 @@
           },
           {
             "$type": "3dGraphicsLayer",
-            "url": "/cam0/app/views/001000000006284/layers/1/graphics3d",
+            "url": "/cam0/app/views/001000000006300/layers/1/graphics3d",
             "graphics": []
           }
         ],
@@ -10853,24 +10853,24 @@
       },
       "source": "A0",
       "title": "A0View",
-      "url": "/cam0/app/views/001000000006284"
+      "url": "/cam0/app/views/001000000006300"
     },
     "A163View": {
       "$type": "View",
       "record": {
         "$type": "ViewRecord",
-        "id": 1000000006288.0,
-        "url": "/cam0/app/views/001000000006288",
+        "id": 1000000006304.0,
+        "url": "/cam0/app/views/001000000006304",
         "heightColor": null,
         "layers": [
           {
             "$type": "ImageLayer",
-            "url": "/cam0/img/001000000018258",
+            "url": "/cam0/img/001000000018286",
             "height": 913,
             "image": {
               "$type": "Image",
-              "id": 1000000018258.0,
-              "url": "/cam0/img/001000000018258",
+              "id": 1000000018286.0,
+              "url": "/cam0/img/001000000018286",
               "frozen": true,
               "height": 913,
               "mask": null,
@@ -10894,13 +10894,13 @@
           },
           {
             "$type": "SVGLayer",
-            "url": "/cam0/app/views/001000000006288/layers/1/svg",
+            "url": "/cam0/app/views/001000000006304/layers/1/svg",
             "contentType": 0,
             "transform": null
           },
           {
             "$type": "GraphicsLayer",
-            "url": "/cam0/app/views/001000000006288/layers/2/graphics"
+            "url": "/cam0/app/views/001000000006304/layers/2/graphics"
           }
         ],
         "profileRectangle": null,
@@ -10913,24 +10913,24 @@
       },
       "source": "A163",
       "title": "A163View",
-      "url": "/cam0/app/views/001000000006288"
+      "url": "/cam0/app/views/001000000006304"
     },
     "A1View": {
       "$type": "View",
       "record": {
         "$type": "ViewRecord",
-        "id": 1000000006285.0,
-        "url": "/cam0/app/views/001000000006285",
+        "id": 1000000006301.0,
+        "url": "/cam0/app/views/001000000006301",
         "heightColor": null,
         "layers": [
           {
             "$type": "ImageLayer",
-            "url": "/cam0/img/001000000018250",
+            "url": "/cam0/img/001000000018278",
             "height": 1503,
             "image": {
               "$type": "Image",
-              "id": 1000000018250.0,
-              "url": "/cam0/img/001000000018250",
+              "id": 1000000018278.0,
+              "url": "/cam0/img/001000000018278",
               "frozen": true,
               "height": 1503,
               "mask": null,
@@ -10962,13 +10962,13 @@
           },
           {
             "$type": "SVGLayer",
-            "url": "/cam0/app/views/001000000006285/layers/1/svg",
+            "url": "/cam0/app/views/001000000006301/layers/1/svg",
             "contentType": 0,
             "transform": null
           },
           {
             "$type": "GraphicsLayer",
-            "url": "/cam0/app/views/001000000006285/layers/2/graphics"
+            "url": "/cam0/app/views/001000000006301/layers/2/graphics"
           }
         ],
         "profileRectangle": null,
@@ -10981,24 +10981,24 @@
       },
       "source": "A1",
       "title": "A1View",
-      "url": "/cam0/app/views/001000000006285"
+      "url": "/cam0/app/views/001000000006301"
     },
     "A49View": {
       "$type": "View",
       "record": {
         "$type": "ViewRecord",
-        "id": 1000000006287.0,
-        "url": "/cam0/app/views/001000000006287",
+        "id": 1000000006303.0,
+        "url": "/cam0/app/views/001000000006303",
         "heightColor": null,
         "layers": [
           {
             "$type": "ImageLayer",
-            "url": "/cam0/img/001000000018252",
+            "url": "/cam0/img/001000000018280",
             "height": 1522,
             "image": {
               "$type": "Image",
-              "id": 1000000018252.0,
-              "url": "/cam0/img/001000000018252",
+              "id": 1000000018280.0,
+              "url": "/cam0/img/001000000018280",
               "frozen": true,
               "height": 1522,
               "mask": null,
@@ -11030,13 +11030,13 @@
           },
           {
             "$type": "SVGLayer",
-            "url": "/cam0/app/views/001000000006287/layers/1/svg",
+            "url": "/cam0/app/views/001000000006303/layers/1/svg",
             "contentType": 0,
             "transform": null
           },
           {
             "$type": "GraphicsLayer",
-            "url": "/cam0/app/views/001000000006287/layers/2/graphics"
+            "url": "/cam0/app/views/001000000006303/layers/2/graphics"
           }
         ],
         "profileRectangle": null,
@@ -11049,24 +11049,24 @@
       },
       "source": "A49",
       "title": "A49View",
-      "url": "/cam0/app/views/001000000006287"
+      "url": "/cam0/app/views/001000000006303"
     },
     "B1View": {
       "$type": "View",
       "record": {
         "$type": "ViewRecord",
-        "id": 1000000006286.0,
-        "url": "/cam0/app/views/001000000006286",
+        "id": 1000000006302.0,
+        "url": "/cam0/app/views/001000000006302",
         "heightColor": null,
         "layers": [
           {
             "$type": "ImageLayer",
-            "url": "/cam0/img/001000000018251",
+            "url": "/cam0/img/001000000018279",
             "height": 269,
             "image": {
               "$type": "Image",
-              "id": 1000000018251.0,
-              "url": "/cam0/img/001000000018251",
+              "id": 1000000018279.0,
+              "url": "/cam0/img/001000000018279",
               "frozen": true,
               "height": 269,
               "mask": null,
@@ -11098,13 +11098,13 @@
           },
           {
             "$type": "SVGLayer",
-            "url": "/cam0/app/views/001000000006286/layers/1/svg",
+            "url": "/cam0/app/views/001000000006302/layers/1/svg",
             "contentType": 0,
             "transform": null
           },
           {
             "$type": "GraphicsLayer",
-            "url": "/cam0/app/views/001000000006286/layers/2/graphics"
+            "url": "/cam0/app/views/001000000006302/layers/2/graphics"
           }
         ],
         "profileRectangle": null,
@@ -11117,14 +11117,14 @@
       },
       "source": "B1",
       "title": "B1View",
-      "url": "/cam0/app/views/001000000006286"
+      "url": "/cam0/app/views/001000000006302"
     },
     "C183View": {
       "$type": "View",
       "record": {
         "$type": "ViewRecord",
-        "id": 1000000006290.0,
-        "url": "/cam0/app/views/001000000006290",
+        "id": 1000000006306.0,
+        "url": "/cam0/app/views/001000000006306",
         "heightColor": {
           "$type": "HeightColor",
           "end": [
@@ -11151,7 +11151,7 @@
           },
           {
             "$type": "3dGraphicsLayer",
-            "url": "/cam0/app/views/001000000006290/layers/1/graphics3d",
+            "url": "/cam0/app/views/001000000006306/layers/1/graphics3d",
             "graphics": []
           }
         ],
@@ -11200,14 +11200,14 @@
       },
       "source": "C183",
       "title": "C183View",
-      "url": "/cam0/app/views/001000000006290"
+      "url": "/cam0/app/views/001000000006306"
     },
     "D178View": {
       "$type": "View",
       "record": {
         "$type": "ViewRecord",
-        "id": 1000000006289.0,
-        "url": "/cam0/app/views/001000000006289",
+        "id": 1000000006305.0,
+        "url": "/cam0/app/views/001000000006305",
         "heightColor": {
           "$type": "HeightColor",
           "end": [
@@ -11234,7 +11234,7 @@
           },
           {
             "$type": "3dGraphicsLayer",
-            "url": "/cam0/app/views/001000000006289/layers/1/graphics3d",
+            "url": "/cam0/app/views/001000000006305/layers/1/graphics3d",
             "graphics": []
           }
         ],
@@ -11283,7 +11283,7 @@
       },
       "source": "D178",
       "title": "D178View",
-      "url": "/cam0/app/views/001000000006289"
+      "url": "/cam0/app/views/001000000006305"
     }
   }
 }

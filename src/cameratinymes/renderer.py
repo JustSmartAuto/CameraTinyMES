@@ -31,6 +31,12 @@ log = logging.getLogger(__name__)
 JPEG_QUALITY = 90
 RENDER_TIMEOUT = 20.0
 
+# 相机图形字号（fontSize）→ 实际字形高度的换算系数。
+# 实测相机自带 Web HMI 的文字墨迹高度约为 fontSize 的 1.72 倍，而本模块按 em
+# 绘制时墨迹约为 em 的 0.72 倍，故 em 系数取 1.72 / 0.72 ≈ 2.4 才能与 HMI 一致。
+# （旧值 1.333 是把它当 pt→px 换算，实测只有 HMI 的 0.56 倍。）
+TEXT_SCALE = 2.4
+
 # 浏览器内合成页面：canvas 尺寸由任务给定，不受窗口大小与 DPI 影响
 _HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -92,6 +98,17 @@ def _points(graphic: dict) -> list[tuple[float, float]]:
     return out
 
 
+def _sub_shapes(graphic: dict):
+    """展开复合图形：subregions 里的图形包在 shape 字段内，graphics 里则是图形本身。"""
+    for sub in graphic.get("subregions") or []:
+        if isinstance(sub, dict):
+            shape = sub.get("shape")
+            yield shape if isinstance(shape, dict) else sub
+    for sub in graphic.get("graphics") or []:
+        if isinstance(sub, dict):
+            yield sub
+
+
 def _bbox(graphic: dict) -> tuple[float, float, float, float] | None:
     """估算图形的坐标包围盒（用于推断坐标系与未知类型的兜底）。"""
     kind = graphic.get("$type")
@@ -118,12 +135,11 @@ def _bbox(graphic: dict) -> tuple[float, float, float, float] | None:
         cx, cy = _f(graphic.get("x")), _f(graphic.get("y"))
         xs += [cx - _f(r), cx + _f(r)]
         ys += [cy - _f(r), cy + _f(r)]
-    for sub in (graphic.get("subregions") or []) + (graphic.get("graphics") or []):
-        if isinstance(sub, dict):
-            inner = _bbox(sub)
-            if inner:
-                xs += [inner[0], inner[2]]
-                ys += [inner[1], inner[3]]
+    for sub in _sub_shapes(graphic):
+        inner = _bbox(sub)
+        if inner:
+            xs += [inner[0], inner[2]]
+            ys += [inner[1], inner[3]]
     if not xs or not ys or kind == "Text":
         return None
     return min(xs), min(ys), max(xs), max(ys)
@@ -141,7 +157,7 @@ def _graphic_svg(graphic: dict, color: str, width: float) -> str:
         if not text:
             return ""
         x, y = _f(graphic.get("x")), _f(graphic.get("y"))
-        size = max(9.0, _f(graphic.get("fontSize") or 9) * 1.333)
+        size = max(9.0, _f(graphic.get("fontSize") or 9) * TEXT_SCALE)
         lines = text.splitlines() or [""]
         parts = [f'<text x="{x:.2f}" y="{y:.2f}" fill="{color}" '
                  f'font-family="Microsoft YaHei, Arial, sans-serif" '
@@ -233,9 +249,11 @@ def _graphic_svg(graphic: dict, color: str, width: float) -> str:
 
     if kind in ("CompositeRegion", "MultiGraphics"):
         out = []
-        for sub in (graphic.get("subregions") or []) + (graphic.get("graphics") or []):
-            if isinstance(sub, dict):
-                out.append(_graphic_svg(sub, color, width))
+        for sub in _sub_shapes(graphic):
+            out.append(_graphic_svg(
+                sub,
+                _hex(sub.get("color"), color),
+                _f(sub.get("lineThickness") or width)))
         return "".join(out)
 
     # 未知类型：有包围盒就画虚线框，至少不丢位置
