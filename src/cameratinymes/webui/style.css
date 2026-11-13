@@ -657,3 +657,25 @@ main.monitor.hidden { display: none; }
   background: #fff; border: 1px solid #e0dacd; border-radius: 3px;
   padding: 8px; display: flex; justify-content: center;
 }
+
+/* ---------- OK/NG 汇总条（monitor 页签顶部） ---------- */
+
+.okng-summary {
+  display: flex; gap: 14px; align-items: center;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  background: #fff;
+  border: 1px solid #d9d3c5;
+  border-radius: 4px;
+}
+.okng-summary .okng-total b.ok { color: #1aaa6e; }
+.okng-summary .okng-total b.ng { color: #d14836; }
+.okng-summary .okng-cams { display: inline-flex; gap: 6px; }
+.okng-summary .cam-okng {
+  padding: 1px 6px; border-radius: 3px; font-size: 11.5px;
+  background: #f0f7f0; border: 1px solid #b9dcbf; color: #107a45;
+  font-variant-numeric: tabular-nums;
+}
+.okng-summary .cam-okng.ng {
+  background: #fbe8e5; border-color: #e5a79d; color: #a02a1c;
+}

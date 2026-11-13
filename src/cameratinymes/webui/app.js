@@ -1735,9 +1735,11 @@ function initMonitorView() {
   connectMonitorWs();
   refreshMonitorStatus();
   refreshMonitorCameras();
+  refreshMonitorOkng();              // 今日 OK/NG 汇总
 
-  // 定时刷新 DB/AV1 状态（HTTP 轮询 5s，不依赖 WS）
+  // 定时刷新 DB/AV1 状态 + 今日 OK/NG 汇总（HTTP 轮询 5s / 30s）
   setInterval(refreshMonitorStatus, 5000);
+  setInterval(refreshMonitorOkng, 30000);
   // 定时修剪日志数组
   setInterval(() => {
     if (monitorState.wsLog.length > 200) monitorState.wsLog.splice(0, monitorState.wsLog.length - 200);
@@ -2159,6 +2161,32 @@ function miniChartConfig(cell) {
 }
 
 function cssEscape(str) { return String(str).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c); }
+
+async function refreshMonitorOkng() {
+  // 今日 OK/NG 汇总：用 /api/okng 同源（复用 okng.hourly_okng）
+  const today = new Date();
+  const day = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+  try {
+    const data = await api(`/api/okng?day=${encodeURIComponent(day)}`);
+    let totalOk = 0, totalNg = 0;
+    const perCam = [];
+    (data.cameras || []).forEach((c) => {
+      totalOk += c.ok_today || 0;
+      totalNg += c.ng_today || 0;
+      if ((c.ok_today || 0) + (c.ng_today || 0) > 0) {
+        perCam.push(`<span class="cam-okng ${(c.ng_today||0)>0?'ng':'ok'}">${esc(c.camera)} ${(c.ok_rate*100).toFixed(1)}%</span>`);
+      }
+    });
+    const total = totalOk + totalNg;
+    const totalRate = total > 0 ? (totalOk / total * 100).toFixed(1) : '—';
+    $('#monitorOkngSummary').innerHTML = `
+      <span class="okng-total">今日 ${day} · 总 OK/NG <b>${totalOk}/${totalNg}</b> · 综合 <b class="${totalNg>0?'ng':'ok'}">${totalRate}%</b></span>
+      ${perCam.length ? '<span class="okng-cams">' + perCam.join(' ') + '</span>' : '<span class="hint">尚无采样数据</span>'}
+    `;
+  } catch (err) {
+    $('#monitorOkngSummary').textContent = 'OK/NG 汇总加载失败: ' + err.message;
+  }
+}
 
 function logMonitor(kind, camera, text) {
   monitorState.wsLog.push({ ts: Date.now(), kind, camera, text });
