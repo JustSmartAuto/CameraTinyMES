@@ -202,7 +202,7 @@ async function boot() {
     if (id) openTicket(id);
   }
   const view = params.get('view');
-  if (view && ['report', 'archive', 'tickets', 'okng'].includes(view)) switchView(view);
+  if (view && ['monitor', 'report', 'archive', 'tickets', 'okng'].includes(view)) switchView(view);
 }
 
 function fillStatic() {
@@ -1015,10 +1015,12 @@ function switchView(view) {
   document.querySelectorAll('.tab').forEach((tab) => {
     tab.classList.toggle('active', tab.dataset.view === view);
   });
+  $('#monitorView').classList.toggle('hidden', view !== 'monitor');
   $('#workbench').classList.toggle('hidden', view !== 'report');
   $('#archiveView').classList.toggle('hidden', view !== 'archive');
   $('#ticketsView').classList.toggle('hidden', view !== 'tickets');
   $('#okngView').classList.toggle('hidden', view !== 'okng');
+  if (view === 'monitor') initMonitorView();
   if (view === 'archive') loadReports();
   if (view === 'tickets') { $('#ticketDetail').classList.add('hidden'); $('#ticketListPanel').classList.remove('hidden'); loadTickets(); }
   if (view === 'okng') loadOkng();
@@ -1704,6 +1706,404 @@ function closeModal() {
   $('#modal').classList.add('hidden');
   $('#modalBox').innerHTML = '';
 }
+
+/* ---------- 数据监控（monitor 页签） ---------- */
+
+const monitorState = {
+  ready: false,
+  mode: 'standalone',           // 'standalone' 或 'live'
+  cameras: [],                  // 完整相机配置（含 cells）
+  cameraNames: [],              // 快速访问数组
+  liveValues: {},               // {camera: {cell: [ts,val]}} — 迷你折线最近 200 点
+  chartInstances: {},           // {camera__cell: Chart} — 迷你折线实例
+  ws: null,
+  wsConnected: false,
+  wsBackoff: 500,
+  wsMaxBackoff: 30000,
+  wsLog: [],                    // [{ts, kind, camera, text}] — 最近 200 条
+  dbInfo: null,                 // {ok, size_mb, backend}
+  av1Info: null,                // {...}
+  lastStatusPoll: 0,
+  standaloneMsgShown: false,
+};
+
+function initMonitorView() {
+  if (monitorState.ready) return;   // 已初始化
+  monitorState.ready = true;
+
+  bindMonitorToolbars();
+  connectMonitorWs();
+  refreshMonitorStatus();
+  refreshMonitorCameras();
+
+  // 定时刷新 DB/AV1 状态（HTTP 轮询 5s，不依赖 WS）
+  setInterval(refreshMonitorStatus, 5000);
+  // 定时修剪日志数组
+  setInterval(() => {
+    if (monitorState.wsLog.length > 200) monitorState.wsLog.splice(0, monitorState.wsLog.length - 200);
+  }, 10000);
+}
+
+function bindMonitorToolbars() {
+  $('#monRefresh').addEventListener('click', () => {
+    refreshMonitorStatus();
+    refreshMonitorCameras();
+  });
+  $('#monConnectAll').addEventListener('click', () => monitorAction('connect_all'));
+  $('#monDisconnectAll').addEventListener('click', () => monitorAction('disconnect_all'));
+  $('#monAddCamera').addEventListener('click', addCameraDialog);
+}
+
+function tokenParam() {
+  const params = new URLSearchParams(location.search);
+  const k = params.get('k');
+  return k ? ('?k=' + encodeURIComponent(k)) : '';
+}
+
+function wsUrl() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${location.host}/ws${tokenParam()}`;
+}
+
+function setWsIndicator(connected) {
+  const indicator = $('#wsIndicator');
+  if (!indicator) return;
+  if (connected) {
+    indicator.innerHTML = '<i class="dot ws-ok"></i> WS 已连接';
+  } else {
+    indicator.innerHTML = '<i class="dot ws-bad"></i> WS 重连中';
+  }
+}
+
+function connectMonitorWs() {
+  try {
+    monitorState.ws = new WebSocket(wsUrl());
+  } catch (err) {
+    logMonitor('error', '—', `WS 创建失败：${err.message}`);
+    scheduleWsReconnect();
+    return;
+  }
+  monitorState.ws.addEventListener('open', () => {
+    monitorState.wsConnected = true;
+    monitorState.wsBackoff = 500;
+    setWsIndicator(true);
+    logMonitor('info', '—', 'WS 已连接');
+  });
+  monitorState.ws.addEventListener('close', () => {
+    monitorState.wsConnected = false;
+    setWsIndicator(false);
+    scheduleWsReconnect();
+  });
+  monitorState.ws.addEventListener('error', () => {
+    setWsIndicator(false);
+  });
+  monitorState.ws.addEventListener('message', (evt) => {
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch { return; }
+    dispatchMonitorWs(msg);
+  });
+}
+
+function scheduleWsReconnect() {
+  if (!monitorState.ready) return;
+  const delay = monitorState.wsBackoff;
+  monitorState.wsBackoff = Math.min(monitorState.wsMaxBackoff, monitorState.wsBackoff * 1.5);
+  setTimeout(connectMonitorWs, delay);
+}
+
+function dispatchMonitorWs(msg) {
+  const k = msg.k, camera = msg.c, p = msg.p;
+  if (k === 'db_status') {
+    monitorState.dbInfo = p;
+    renderMonitorStatus();
+  } else if (k === 'connected') {
+    logMonitor('info', camera, '连接成功');
+    markCameraStatus(camera, 'connected');
+  } else if (k === 'disconnected') {
+    logMonitor('warn', camera, '已断开');
+    markCameraStatus(camera, 'disconnected');
+  } else if (k === 'error') {
+    logMonitor('error', camera, String(p || '').slice(0, 120));
+    markCameraStatus(camera, 'error');
+  } else if (k === 'job') {
+    setCameraJob(camera, String(p));
+  } else if (k === 'result' && typeof p === 'object') {
+    for (const [cell, value] of Object.entries(p)) {
+      pushLiveValue(camera, cell, value);
+    }
+    updateCameraCardValues(camera, p);
+  } else if (k === 'history' && typeof p === 'object') {
+    // 新客上线快照：批量载入 LiveCache
+    for (const [cam, cells] of Object.entries(p)) {
+      for (const [cell, points] of Object.entries(cells)) {
+        for (const point of points) {
+          const val = point[1] instanceof Array ? point[1][1] : point[1];
+          const lk = point[1] instanceof Array ? 'status' : 'value';
+          if (lk === 'value') pushLiveValue(cam, cell, val);
+          else markCameraStatus(cam, val[0]);
+        }
+      }
+    }
+  } else if (k === 'standalone' && !monitorState.standaloneMsgShown) {
+    monitorState.standaloneMsgShown = true;
+    logMonitor('warn', '—', String(p.msg || '独立进程模式，仅历史数据'));
+  }
+}
+
+function markCameraStatus(camera, kind) {
+  const card = $(`.cam-card[data-camera="${cssEscape(camera)}"]`);
+  if (!card) return;
+  card.dataset.status = kind;
+  const dot = card.querySelector('.cam-status');
+  if (dot) {
+    dot.className = 'dot ws-' + (kind === 'connected' ? 'ok' :
+                                  kind === 'disconnected' ? 'bad' :
+                                  kind === 'error' ? 'bad' : 'wait');
+    dot.title = kind;
+  }
+}
+
+function setCameraJob(camera, job) {
+  const card = $(`.cam-card[data-camera="${cssEscape(camera)}"]`);
+  if (!card) return;
+  const jobEl = card.querySelector('.cam-job');
+  if (jobEl) jobEl.textContent = job ? `配方: ${job}` : '';
+}
+
+function pushLiveValue(camera, cell, value) {
+  const bucket = monitorState.liveValues[camera] || {};
+  const lst = bucket[cell] || (bucket[cell] = []);
+  lst.push([Date.now(), value]);
+  if (lst.length > 200) lst.splice(0, lst.length - 200);
+  monitorState.liveValues[camera] = bucket;
+
+  // 迷你折线更新
+  const chartKey = `${camera}__${cell}`;
+  const chart = monitorState.chartInstances[chartKey];
+  if (chart) {
+    chart.data.labels = lst.map((p) => new Date(p[0]).toLocaleTimeString('zh-CN', { hour12: false }));
+    chart.data.datasets[0].data = lst.map((p) => {
+      const v = typeof p[1] === 'number' ? p[1] : null;
+      return { x: p[0], y: v };
+    });
+    // 只对 numeric cell 绘制；字符串/布尔单元格不画折线
+    if (cellIsNumeric(camera, cell)) chart.update('none');
+  }
+}
+
+function cellIsNumeric(camera, cell) {
+  const cam = monitorState.cameras.find((c) => c.name === camera);
+  if (!cam) return false;
+  const c = cam.cells.find((x) => x.name === cell);
+  return c && ['float', 'int'].includes(c.data_type);
+}
+
+function updateCameraCardValues(camera, payload) {
+  const card = $(`.cam-card[data-camera="${cssEscape(camera)}"]`);
+  if (!card) return;
+  const bucket = monitorState.liveValues[camera] || {};
+  // 更新每个单元格的值显示
+  card.querySelectorAll('.cam-cell-row').forEach((row) => {
+    const cell = row.dataset.cell;
+    const value = bucket[cell] && bucket[cell].length
+      ? bucket[cell][bucket[cell].length - 1][1] : '';
+    const valEl = row.querySelector('.cam-cell-val');
+    if (valEl) valEl.textContent = value === '' ? '—' : String(value);
+    valEl?.classList.toggle('ng', isNgValue(camera, cell, value));
+  });
+}
+
+function isNgValue(camera, cell, value) {
+  const cam = monitorState.cameras.find((c) => c.name === camera);
+  if (!cam) return false;
+  const cfg = cam.cells.find((c) => c.name === cell);
+  if (!cfg) return false;
+  if (typeof value === 'number') {
+    if (cfg.lower != null && value < cfg.lower) return true;
+    if (cfg.upper != null && value > cfg.upper) return true;
+  }
+  if (cfg.data_type === 'string' && cfg.fail_values && cfg.fail_values.includes(String(value))) return true;
+  return false;
+}
+
+async function refreshMonitorStatus() {
+  try {
+    const data = await api('/api/monitor/status');
+    monitorState.mode = data.mode || 'standalone';
+    monitorState.dbInfo = data.db;
+    monitorState.av1Info = data.av1;
+    renderMonitorStatus();
+  } catch (err) {
+    logMonitor('error', '—', `状态刷新失败: ${err.message}`);
+  }
+}
+
+function renderMonitorStatus() {
+  const db = monitorState.dbInfo || {};
+  const av1 = monitorState.av1Info || {};
+  $('#monitorDbStatus').textContent = `DB: ${db.ok ? '正常' : '离线'} · ${db.backend || '—'} · ${(db.size_mb || 0).toFixed(1)} MB`;
+  const runs = av1.runs || 0;
+  const saved = (av1.saved_mb || 0).toFixed(1);
+  $('#monitorAv1').textContent = runs > 0 ? `AV1: ${runs} 轮 / 省 ${saved} MB` : 'AV1 压缩未启用';
+  $('#monitorMode').textContent = monitorState.mode === 'live' ? '📡 实时模式' : '📂 独立进程模式（仅历史数据）';
+  // 在线数（从相机卡片 status 汇总）
+  let online = 0;
+  monitorState.cameras.forEach((cam) => {
+    const card = $(`.cam-card[data-camera="${cssEscape(cam.name)}"]`);
+    if (card && card.dataset.status === 'connected') online++;
+    else if (card && !card.dataset.status && !cam.enabled) {/* skip disabled */}
+  });
+  $('#monOnline').textContent = online;
+  $('#monWsClients').textContent = `${monitorState.wsConnected ? '●' : '○'} WS: — 客户端`;
+}
+
+async function refreshMonitorCameras() {
+  try {
+    const data = await api('/api/monitor/cameras');
+    monitorState.cameras = data.cameras;
+    monitorState.cameraNames = data.cameras.map((c) => c.name);
+    renderMonitorGrid();
+  } catch (err) {
+    logMonitor('error', '—', `相机列表加载失败: ${err.message}`);
+  }
+}
+
+function renderMonitorGrid() {
+  const grid = $('#monitorGrid');
+  $('#monTotal').textContent = monitorState.cameras.length;
+  if (!monitorState.cameras.length) {
+    grid.innerHTML = '<div class="hint" style="padding:20px">暂无配置相机</div>';
+    return;
+  }
+  grid.innerHTML = monitorState.cameras.map((cam) => cameraCardHtml(cam)).join('');
+  // 初始化迷你折线 Chart.js
+  monitorState.cameras.forEach((cam) => {
+    cam.cells.forEach((cell) => {
+      if (!cellIsNumeric(cam.name, cell.name)) return;
+      const canvas = $(`.cam-card[data-camera="${cssEscape(cam.name)}"] .cam-chart canvas[data-cell="${cssEscape(cell.name)}"]`);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const chart = new Chart(ctx, miniChartConfig(cell));
+      monitorState.chartInstances[`${cam.name}__${cell.name}`] = chart;
+    });
+  });
+  // 卡片操作按钮绑定
+  $$('.cam-card [data-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const camera = btn.closest('.cam-card').dataset.camera;
+      const action = btn.dataset.action;
+      if (action === 'connect') { monitorAction('connect', camera); }
+      else if (action === 'disconnect') { monitorAction('disconnect', camera); }
+      else if (action === 'edit') { cameraConfigDialog(camera); }
+      else if (action === 'export') { exportCameraXlsx(camera); }
+    });
+  });
+}
+
+function cameraCardHtml(cam) {
+  const disabledClass = cam.enabled ? '' : ' disabled';
+  return `<div class="cam-card${disabledClass}" data-camera="${esc(cam.name)}" data-status="">
+    <div class="cam-head">
+      <div class="cam-title"><i class="dot ws-wait cam-status"></i>
+        <b>${esc(cam.name)}</b>
+        <span class="hint">${esc(cam.host)}:${cam.port}</span>
+      </div>
+      <div class="cam-actions">
+        <button class="mini" data-action="connect">连接</button>
+        <button class="mini" data-action="disconnect">断开</button>
+        <button class="mini" data-action="edit">编辑</button>
+        <button class="mini" data-action="export">xlsx</button>
+      </div>
+    </div>
+    <div class="cam-job"></div>
+    <div class="cam-body">
+      ${cam.cells.map((cell) => cellRowHtml(cell)).join('')}
+    </div>
+  </div>`;
+}
+
+function cellRowHtml(cell) {
+  const isNumeric = ['float', 'int'].includes(cell.data_type);
+  const limits = (cell.lower != null || cell.upper != null)
+    ? ` [${cell.lower ?? '—'}~${cell.upper ?? '—'}]${cell.unit ? ' ' + esc(cell.unit) : ''}`
+    : '';
+  const chartHtml = isNumeric
+    ? `<div class="cam-chart"><canvas data-cell="${esc(cell.name)}" width="180" height="36"></canvas></div>`
+    : `<div class="cam-chart hint">${esc(cell.data_type)}</div>`;
+  return `<div class="cam-cell-row" data-cell="${esc(cell.name)}">
+    <div class="cam-cell-name">${esc(cell.name)}<span class="hint">·${esc(cell.data_type)}${limits}</span></div>
+    ${chartHtml}
+    <div class="cam-cell-val">—</div>
+  </div>`;
+}
+
+function miniChartConfig(cell) {
+  const color = cell.lower != null || cell.upper != null ? '#00cc88' : '#6688aa';
+  return {
+    type: 'line',
+    data: { labels: [], datasets: [{
+      data: [],
+      borderColor: color,
+      backgroundColor: color + '22',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.35,
+      fill: false,
+      spanGaps: true,
+    }]},
+    options: {
+      responsive: false, animation: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: {
+        x: { display: false },
+        y: { display: false, suggestedMin: cell.lower != null ? cell.lower * 0.98 : undefined,
+                                suggestedMax: cell.upper != null ? cell.upper * 1.02 : undefined },
+      },
+    },
+  };
+}
+
+function cssEscape(str) { return String(str).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c); }
+
+function logMonitor(kind, camera, text) {
+  monitorState.wsLog.push({ ts: Date.now(), kind, camera, text });
+  const tail = $('#monLogTail');
+  if (!tail) return;
+  const line = document.createElement('div');
+  line.className = 'log-line log-' + (kind === 'error' ? 'err' : kind === 'warn' ? 'warn' : 'info');
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  line.textContent = `[${time}] ${camera !== '—' ? camera : ''} ${text}`;
+  tail.appendChild(line);
+  // 保持滚动到底
+  tail.scrollTop = tail.scrollHeight;
+  // 超过 200 行时移除旧行
+  while (tail.children.length > 200) tail.removeChild(tail.firstChild);
+  $('#monLogCount').textContent = `${monitorState.wsLog.length} 条`;
+}
+
+async function monitorAction(action, camera) {
+  if (!monitorState.mode || monitorState.mode === 'standalone') {
+    toast('独立进程模式，无法远程控制相机', 3000);
+    return;
+  }
+  try {
+    if (action === 'connect_all') await api('/api/monitor/cameras/connect_all', { method: 'POST' });
+    else if (action === 'disconnect_all') await api('/api/monitor/cameras/disconnect_all', { method: 'POST' });
+    else if (action === 'connect') await api(`/api/monitor/cameras/${encodeURIComponent(camera)}/connect`, { method: 'POST' });
+    else if (action === 'disconnect') await api(`/api/monitor/cameras/${encodeURIComponent(camera)}/disconnect`, { method: 'POST' });
+    toast('已发送 ' + action, 2000);
+  } catch (err) { toast(err.message, 3000); }
+}
+
+async function exportCameraXlsx(camera) {
+  try {
+    const data = await api(`/api/monitor/cameras/${encodeURIComponent(camera)}/export_xlsx`, { method: 'POST' });
+    toast('导出任务已提交', 2000);
+  } catch (err) { toast(err.message, 3000); }
+}
+
+function addCameraDialog() { toast('暂未实现：请先在桌面端添加相机', 2500); }
+function cameraConfigDialog(camera) { toast('暂未实现：请先在桌面端编辑相机', 2500); }
 
 /* ---------- 启动 ---------- */
 

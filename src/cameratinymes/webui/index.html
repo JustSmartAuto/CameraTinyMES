@@ -5,13 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>改善报告工作台</title>
 <link rel="stylesheet" href="/webui/style.css">
+<script src="/webui/chart.umd.min.js"></script>
 </head>
 <body>
 <div id="busyBar" aria-hidden="true"></div>
 <div class="app">
   <header class="topbar">
     <div class="title-row">
-      <div class="tab active" data-view="report">工作台</div>
+      <div class="tab active" data-view="monitor">数据监控</div>
+      <div class="tab" data-view="report">工作台</div>
       <div class="tab" data-view="archive">报告存档</div>
       <div class="tab" data-view="tickets">工单</div>
       <div class="tab" data-view="okng">OK/NG率</div>
@@ -41,7 +43,36 @@
     </div>
   </header>
 
-  <main class="workbench" id="workbench">
+  <main class="monitor" id="monitorView">
+    <div class="monitor-top" id="monitorTop">
+      <span class="hint ws-indicator" id="wsIndicator">
+        <i class="dot ws-wait"></i> WS 连接中
+      </span>
+      <span class="hint" id="monitorDbStatus">—</span>
+      <span class="hint" id="monitorAv1">—</span>
+      <span class="hint" id="monitorMode">加载中…</span>
+    </div>
+    <div class="monitor-toolbar" id="monitorToolbar">
+      <button class="mini" id="monConnectAll">连接全部</button>
+      <button class="mini" id="monDisconnectAll">断开全部</button>
+      <button class="mini primary" id="monAddCamera">+ 添加相机</button>
+      <span class="spacer"></span>
+      <span class="hint">共 <b id="monTotal">0</b> 台，在线 <b id="monOnline">0</b></span>
+      <span class="hint ws-clients" id="monWsClients">— WS 客户端</span>
+      <button class="mini" id="monRefresh">刷新</button>
+    </div>
+    <div class="monitor-grid" id="monitorGrid">
+      <div class="loading"><span class="spinner"></span>正在加载相机数据…</div>
+    </div>
+    <div class="monitor-bottom">
+      <details open>
+        <summary>实时日志 <span class="hint" id="monLogCount"></span></summary>
+        <div class="log-tail" id="monLogTail"></div>
+      </details>
+    </div>
+  </main>
+
+  <main class="workbench hidden" id="workbench">
     <aside class="stations" id="stationList">
       <div class="loading"><span class="spinner"></span>正在加载相机数据…</div>
     </aside>

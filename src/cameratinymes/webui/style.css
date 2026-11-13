@@ -522,3 +522,88 @@ table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
   0% { background-position: 100% 0; }
   100% { background-position: 0 0; }
 }
+
+/* ---------- 数据监控页签 ---------- */
+
+main.monitor {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 8px 10px; overflow: hidden;
+}
+main.monitor.hidden { display: none; }
+
+.monitor-top, .monitor-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px;
+  background: #f7f4eb;
+  border: 1px solid #d9d3c5;
+  border-radius: 4px;
+}
+.monitor-top { font-size: 12.5px; }
+.monitor-top .hint { display: flex; align-items: center; gap: 6px; }
+
+/* WS 状态指示灯 */
+.ws-indicator { display: inline-flex; align-items: center; gap: 6px; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+       margin-right: 4px; vertical-align: middle; }
+.dot.ws-wait  { background: #f0b93a; box-shadow: 0 0 6px #f0b93a88; }
+.dot.ws-ok    { background: #1aaa6e; box-shadow: 0 0 6px #1aaa6e88; }
+.dot.ws-bad   { background: #d14836; box-shadow: 0 0 6px #d1483688; }
+
+.monitor-grid {
+  flex: 1; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 10px; padding: 4px;
+}
+
+.cam-card {
+  background: #ffffff; border: 1px solid #d8d4ca; border-radius: 5px;
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  transition: border-color .15s;
+}
+.cam-card.disabled { opacity: .55; }
+.cam-card[data-status="connected"]   { border-color: #1aaa6e; }
+.cam-card[data-status="disconnected"]{ border-color: #888; }
+.cam-card[data-status="error"]       { border-color: #d14836; }
+
+.cam-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.cam-title { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
+.cam-title b { font-weight: 700; }
+.cam-actions { display: flex; gap: 4px; }
+
+.cam-job { font-size: 11.5px; color: #8a6a1e; font-style: italic; padding-left: 4px; }
+
+.cam-body { display: flex; flex-direction: column; gap: 2px; }
+.cam-cell-row {
+  display: grid; grid-template-columns: 140px 1fr 80px; gap: 6px;
+  align-items: center; padding: 3px 4px;
+  border-bottom: 1px dashed #eee;
+}
+.cam-cell-row:last-child { border-bottom: none; }
+.cam-cell-name { font-size: 12px; color: #333; font-family: Consolas, monospace; }
+.cam-cell-name .hint { font-size: 11px; color: #888; font-family: -apple-system, sans-serif; }
+.cam-chart { height: 36px; display: flex; align-items: center; }
+.cam-chart.hint { font-size: 11px; color: #999; justify-content: center; }
+.cam-cell-val { font-size: 13px; text-align: right; font-family: Consolas, monospace;
+                font-variant-numeric: tabular-nums; color: #222; }
+.cam-cell-val.ng { color: #d14836; font-weight: 700; }
+
+.monitor-bottom {
+  max-height: 200px; overflow: hidden;
+  background: #f7f4eb; border: 1px solid #d9d3c5; border-radius: 4px;
+}
+.monitor-bottom summary {
+  cursor: pointer; padding: 4px 10px; font-size: 12px;
+  background: #eee9dc;
+}
+.monitor-bottom details:not([open]) .log-tail { display: none; }
+.log-tail {
+  height: 140px; overflow-y: auto;
+  padding: 4px 8px;
+  font-family: Consolas, monospace; font-size: 11.5px;
+  background: #1a1a1a; color: #d6d6d6;
+}
+.log-line { line-height: 1.5; white-space: pre-wrap; }
+.log-line.log-err  { color: #ff6b6b; }
+.log-line.log-warn { color: #f7c948; }
+.log-line.log-info { color: #99d6ff; }
