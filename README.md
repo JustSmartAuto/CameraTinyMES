@@ -442,6 +442,55 @@ uv run python build_exe.py           # PyInstaller 打包 dist/CameraTinyMES_{yy
 
 应用启动时会自动拉起改善报告 Web 工作台：本机访问 `http://127.0.0.1:18110/report`，其他工控机访问 `http://<本机IP>:18110/report`。端口被占用时实际端口写入 `settings.json` 的 `web_port`，也可在「系统 → 设置 → 改善报告工作台」修改监听地址 / 端口 / 口令。
 
+## 数据监控 Web（已实现 v1.0）
+
+2026-11-13 交付。详情见 `docs/数据监控Web实施方案.md`。
+
+### 功能总览
+
+Web 工作台顶部新增"数据监控"页签，完整覆盖 Tkinter 主界面的实时采集能力：
+
+| 能力 | 说明 |
+|---|---|
+| 多相机宫格面板 | 每卡显示相机连接状态、配方名、各单元格实时值（WebSocket 推送 ≤100ms） |
+| 迷你折线图 | 每数值单元格内嵌 Chart.js 迷你折线（红段=超差），数据来自 LiveCache 最近 200 点 |
+| 历史趋势对话框 | 单元格名旁 📈 按钮 → 时间范围选择 → Chart.js 折线（红段超差 + 虚线阈值基线），复用 `storage.range_cell_values` |
+| DB / AV1 状态 | 顶部状态栏实时显示数据库健康、AV1 压缩进度（HTTP 轮询 5s） |
+| WS 连接状态 | 顶部指示灯：绿=已连接，红=重连中（指数退避 500ms→30s），灰=独立进程降级 |
+| 实时日志 | 底部暗底滚动尾日志，最多 200 条 |
+| 相机 CRUD | Web 端添加/编辑/删除相机 → 乐观锁（`CameraConfig.updated_at`） → `save_config` → `MonitorApp.reload_config` 热重载 → Worker diff stop/start |
+| 远程控制 | 连接全部 / 断开全部 / 单相机连接断开（仅本机 `require_local` 可调用） |
+| 相机级 xlsx 导出 | 复用后台任务队列，与 Tkinter 面板导出同源 |
+
+### 实时数据通路
+
+```
+Worker (asyncio) → Monitor.push() 扇出多订阅者 queue (maxsize=1000)
+                    ├→ Tkinter 主界面 poll
+                    └→ Web 订阅者 poll → LiveCache 更新 → WebSocket 帧推所有浏览器
+浏览器 WS 握手 → 立即推 LiveCache 快照（history 消息）→ 上线即有数据可看
+```
+
+### 安全矩阵
+
+- **GET /api/monitor/* 全部开放**（数据库状态、相机配置、历史采样、实时 WS）
+- **POST/PUT/PATCH/DELETE** 需 Origin（本机/局域网 IP）或空 Origin + `X-CTM-Token`
+- **连接/断开/导出/删除数据** 叠加 `_require_local`（仅本机回环地址可调用）
+- WebSocket `/ws` 握手复用 token 校验，空 Origin + 合法 Cookie 放行
+
+### 独立进程降级
+
+`web_only.py` 独立进程启动（如远端访问中心库）时没有 `Monitor` 引用，WS 端点自动降级为 `standalone` 模式：实时状态显示"📂 独立进程模式（仅历史数据）"，`POST /api/monitor/cameras/*` 返回 422。历史采样查询不受影响。
+
+### 已新增文件
+
+- `src/cameratinymes/webui/chart.umd.min.js` — Chart.js v4 UMD 压缩版（206KB，本地化不走 CDN）
+- `src/cameratinymes/config.py` — `CameraConfig.updated_at` 字段 + `save_config` 每次写入自动 bump
+- `src/cameratinymes/storage.py` — `StorageBase.range_cell_values` 基类方法（SQLite/MariaDB 双实现）
+- `src/cameratinymes/worker.py` — `Monitor.events` 多订阅者（原 `queue.Queue` → `list[queue.Queue]`）+ `subscribe()/push()`
+- `src/cameratinymes/ui.py` — `db_status_q` 多订阅者 + `MonitorApp.reload_config`（Worker diff stop/start）+ `connect_camera_by_name` 等公开桥接
+- `src/cameratinymes/web.py` — 内联 RFC 6455 WebSocket `/ws` + LiveCache 200/键 + WS push loop + DB push loop + 13 个新端点（5 GET + 8 POST/PUT/PATCH/DELETE）
+
 ## 路线图（未完成规划）
 
 ### 报告功能现场验证
