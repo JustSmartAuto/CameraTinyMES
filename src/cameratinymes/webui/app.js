@@ -1998,6 +1998,98 @@ function renderMonitorGrid() {
       else if (action === 'export') { exportCameraXlsx(camera); }
     });
   });
+  // 历史趋势按钮绑定
+  $$('.expand-trend').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const card = btn.closest('.cam-card');
+      const camera = card.dataset.camera;
+      const cell = btn.dataset.cell;
+      openHistoricalTrend(camera, cell);
+    });
+  });
+}
+
+/* ---------- 历史趋势对话框 ---------- */
+
+async function openHistoricalTrend(camera, cell) {
+  const today = new Date();
+  const y = today.getFullYear(), m = String(today.getMonth() + 1).padStart(2, '0');
+  const d = String(today.getDate()).padStart(2, '0');
+  const from = `${y}-${m}-${d}T00:00`;
+  const to = `${y}-${m}-${d}T23:59`;
+  const modalHtml = `
+    <h3>历史趋势：${esc(camera)} / ${esc(cell)}</h3>
+    <div class="trend-range">
+      <label>从 <input type="datetime-local" id="trendFrom" value="${from}"></label>
+      <label>到 <input type="datetime-local" id="trendTo"   value="${to}"></label>
+      <button class="mini primary" id="trendLoad">加载</button>
+      <span class="hint" id="trendHint"></span>
+    </div>
+    <div class="trend-wrap"><canvas id="trendCanvas" width="700" height="280"></canvas></div>
+    <div class="modal-footer">
+      <button class="mini" data-close>关闭</button>
+    </div>`;
+  openModal(modalHtml);
+  let trendChart = null;
+
+  const load = async () => {
+    const vf = $('#trendFrom').value.replace(' ', 'T');
+    const vt = $('#trendTo').value.replace(' ', 'T');
+    $('#trendHint').textContent = '加载中…';
+    try {
+      const data = await api(`/api/monitor/cameras/${encodeURIComponent(camera)}/cells/${encodeURIComponent(cell)}/values?from=${encodeURIComponent(vf)}&to=${encodeURIComponent(vt)}&limit=5000`);
+      const points = data.points || [];
+      const { lower_limit: lo, upper_limit: hi } = data;
+      const labels = points.map((p) => p[0].slice(11, 19));
+      const values = points.map((p) => p[1]);
+      // 超差点单独标记
+      const bg = points.map((p) =>
+        p[1] == null ? null :
+        ((lo != null && p[1] < lo) || (hi != null && p[1] > hi)) ? '#d14836' : '#00cc88'
+      );
+      if (trendChart) trendChart.destroy();
+      const ctx = $('#trendCanvas').getContext('2d');
+      trendChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            data: values,
+            borderColor: '#00cc88',
+            borderWidth: 1.5, pointRadius: 0.5, tension: 0.3,
+            spanGaps: true,
+            segment: { borderColor: (ctx) => {
+              const i = ctx.p0DataIndex;
+              return bg[i] && bg[i] !== '#00cc88' ? '#d14836' : '#00cc88';
+            }},
+          }],
+        },
+        options: {
+          responsive: false, animation: false,
+          plugins: {
+            legend: { display: false },
+            title: { display: true, text: `${camera} / ${cell}  ·  ${lo ?? '—'} ~ ${hi ?? '—'}`, font: { size: 12 } },
+          },
+          scales: {
+            x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+            y: { suggestedMin: lo != null ? lo - (hi - lo) * 0.1 : undefined,
+                 suggestedMax: hi != null ? hi + (hi - lo) * 0.1 : undefined,
+                 grid: { color: (line) => {
+                   const y = line.tick.value;
+                   if ((lo != null && Math.abs(y - lo) < 1e-9) || (hi != null && Math.abs(y - hi) < 1e-9)) return '#d1483688';
+                   return '#ddd';
+                 }},
+            },
+          },
+        },
+      });
+      $('#trendHint').textContent = `${points.length} 个采样点`;
+    } catch (err) {
+      $('#trendHint').textContent = '加载失败: ' + err.message;
+    }
+  };
+  $('#trendLoad').addEventListener('click', load);
+  load();
 }
 
 function cameraCardHtml(cam) {
@@ -2030,8 +2122,11 @@ function cellRowHtml(cell) {
   const chartHtml = isNumeric
     ? `<div class="cam-chart"><canvas data-cell="${esc(cell.name)}" width="180" height="36"></canvas></div>`
     : `<div class="cam-chart hint">${esc(cell.data_type)}</div>`;
+  const expandBtn = isNumeric
+    ? `<button type="button" class="mini expand-trend" title="查看历史趋势" data-cell="${esc(cell.name)}">📈</button>`
+    : '';
   return `<div class="cam-cell-row" data-cell="${esc(cell.name)}">
-    <div class="cam-cell-name">${esc(cell.name)}<span class="hint">·${esc(cell.data_type)}${limits}</span></div>
+    <div class="cam-cell-name">${esc(cell.name)}<span class="hint">·${esc(cell.data_type)}${limits}</span> ${expandBtn}</div>
     ${chartHtml}
     <div class="cam-cell-val">—</div>
   </div>`;

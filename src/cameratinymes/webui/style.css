@@ -641,3 +641,19 @@ main.monitor.hidden { display: none; }
 }
 .cell-table input[type=number] { width: 80px; }
 .cell-table .cname { text-transform: uppercase; }
+
+/* ---------- 历史趋势对话框 ---------- */
+
+.trend-range {
+  display: flex; gap: 10px; align-items: center; margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.trend-range label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
+.trend-range input[type="datetime-local"] {
+  font-family: Consolas, monospace; font-size: 12.5px; padding: 3px 5px;
+  border: 1px solid #c4b9a3; border-radius: 3px; background: #fffdf6;
+}
+.trend-wrap {
+  background: #fff; border: 1px solid #e0dacd; border-radius: 3px;
+  padding: 8px; display: flex; justify-content: center;
+}
