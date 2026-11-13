@@ -29,7 +29,7 @@ from cameratinymes.config import (
 )
 from cameratinymes.storage import open_storage
 
-DEFAULT_DB_HOST = "192.168.10.64"
+DEFAULT_DB_HOST = "10.126.126.3"
 
 
 def parse_args(argv=None) -> argparse.Namespace:
