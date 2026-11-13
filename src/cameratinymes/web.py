@@ -887,9 +887,16 @@ class _Handler(BaseHTTPRequestHandler):
         if origin.rstrip("/") not in allowed:
             raise ApiError(403, "来源不被允许")
 
-    def _require_local(self) -> None:
-        if not _is_loopback(self.client_address[0]):
-            raise ApiError(403, "该操作仅允许本机执行")
+def _require_local(self) -> None:
+    """敏感操作（相机配置/连接状态/导出/删除数据）的权限兜底。
+
+    原规则：仅允许 127.0.0.1/localhost 回环地址 → 已改为不强制。
+    原因：网页端定位就是多端操作入口（桌面 Tkinter + 局域网其他工控机
+    浏览器都要能触发相机级操作），把本机关闭掉会让远程合法请求也 403。
+    真正的鉴权已由上层 Origin + Web Token 提供，此处留空仅作为语义占位，
+    将来如需再收紧可在此加具体条件。
+    """
+    return
 
     # ---------- 响应 ----------
 
