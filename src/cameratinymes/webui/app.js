@@ -2242,6 +2242,16 @@ function cameraDialog(camera) {
       <button class="mini primary" id="camDlgConfirm">保存</button>
     </div>`;
   openModal(modalHtml);
+  document.getElementById('camDlgAddCell').addEventListener('click', () => {
+    const tbody = document.querySelector('#camDlgCellTable tbody');
+    const tr = document.createElement('tr');
+    tr.innerHTML = renderCellRow(
+      { name: '', data_type: 'float', record_mode: 'advanced', sample_mode: 'event',
+        poll_interval: 0, lower: null, upper: null, unit: '', role: 'auto',
+        pass_values: [], fail_values: [], note: '' }, 'NEW');
+    tbody.appendChild(tr);
+    tr.querySelector('input[name=name]').focus();
+  });
   document.getElementById('camDlgConfirm').addEventListener('click', async () => {
     const form = document.getElementById('camDlgForm');
     const payload = parseCameraForm(form, isEdit);
@@ -2308,17 +2318,7 @@ function renderCameraDialogBody(cam, isEdit) {
       <tbody>${cam.cells.map((c, i) => renderCellRow(c, i)).join('')}</tbody>
     </table>
     <button type="button" class="mini primary" id="camDlgAddCell">+ 添加单元格</button>
-  </form>
-  <script>
-    document.getElementById('camDlgAddCell')?.addEventListener('click', () => {
-      const tbody = document.querySelector('#camDlgCellTable tbody');
-      const idx = tbody.children.length;
-      const tr = document.createElement('tr');
-      tr.innerHTML = ${JSON.stringify(renderCellRow({ name: '', data_type: 'float', record_mode: 'advanced', sample_mode: 'event', poll_interval: 0, lower: null, upper: null, unit: '', role: 'auto', pass_values: [], fail_values: [], note: '' }, 'NEW')).replace(/"/g, "'")};
-      tbody.appendChild(tr);
-      tr.querySelector('input[name=name]').focus();
-    });
-  </script>`;
+  </form>`;
 }
 
 function renderCellRow(c, key) {
