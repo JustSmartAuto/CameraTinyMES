@@ -1291,9 +1291,121 @@ class _Handler(BaseHTTPRequestHandler):
                     "hint": "数据删除暂未实现"})
 
     def _api_monitor_camera_create(self) -> None:
-        """新建相机：解析 body → CameraConfig → save_config → reload_config。
-        暂未实现（需要 B3b 完整 CRUD + 乐观锁），先返回 stub 提示。"""
-        self._json({"ok": False, "hint": "相机 CRUD 尚未完全实现；请先在桌面端添加相机"})
+        """POST /api/monitor/cameras：新建相机，带完整 cells 列表；乐观锁通过 updated_at 自动 bump。"""
+        from .config import CameraConfig, CellConfig, load_config, save_config
+        self._require_monitor_app()
+        body = self._body_json()
+        name = str(body.get("name") or "").strip()
+        host = str(body.get("host") or "").strip()
+        if not name or not host:
+            raise ApiError(400, "缺少相机名称 / IP")
+        if self.app.monitor_app.find_camera(name):
+            raise ApiError(409, f"相机 {name} 已存在")
+
+        cells = self._parse_cells(body.get("cells") or [])
+        cam = CameraConfig(
+            name=name, host=host, port=int(body.get("port") or 80),
+            username=str(body.get("username") or "admin"),
+            password=str(body.get("password") or ""),
+            enabled=bool(body.get("enabled", True)),
+            cells=cells,
+            reconnect_interval=float(body.get("reconnect_interval") or 5.0),
+            model=str(body.get("model") or ""),
+            station=str(body.get("station") or ""),
+            station_name=str(body.get("station_name") or ""),
+        )
+        all_cameras = load_config(self.app.data_dir)
+        all_cameras.append(cam)
+        save_config(self.app.data_dir, all_cameras)
+        self.app.monitor_app.root.after(0, self.app.monitor_app.reload_config)
+        self.app.cameras = list(all_cameras)
+        self._json({"ok": True, "camera": self._monitor_camera_dict(cam), "reload": True})
+
+    def _api_monitor_camera_update(self, name: str) -> None:
+        """PUT/PATCH /api/monitor/cameras/<name>：完整替换相机配置，带乐观锁。"""
+        from .config import CameraConfig, load_config, save_config
+        self._require_monitor_app()
+        self._require_local()
+        body = self._body_json()
+        base_updated_at = body.get("base_updated_at")
+        force = bool(body.get("force"))
+
+        all_cameras = load_config(self.app.data_dir)
+        idx = -1
+        for i, c in enumerate(all_cameras):
+            if c.name == name:
+                idx = i; break
+        if idx < 0:
+            raise ApiError(404, f"未知相机：{name}")
+        current = all_cameras[idx]
+        if (base_updated_at and current.updated_at
+                and current.updated_at != base_updated_at and not force):
+            raise ApiError(409, {
+                "error": "stale",
+                "message": "配置已被其他端更新，请刷新后重试或携带 force=true 覆盖",
+                "current": current.updated_at,
+            })
+        new_name = str(body.get("name") or current.name).strip()
+        if new_name != name and any(c.name == new_name for c in all_cameras):
+            raise ApiError(409, f"名称 {new_name} 已被其他相机使用")
+        cam = CameraConfig(
+            name=new_name,
+            host=str(body.get("host") or current.host).strip(),
+            port=int(body.get("port") or current.port),
+            username=str(body.get("username") or current.username),
+            password=str(body.get("password") or current.password),
+            enabled=bool(body.get("enabled", current.enabled)),
+            reconnect_interval=float(body.get("reconnect_interval") or current.reconnect_interval),
+            cells=self._parse_cells(body.get("cells") or current.cells),
+            model=str(body.get("model") or current.model),
+            station=str(body.get("station") or current.station),
+            station_name=str(body.get("station_name") or current.station_name),
+        )
+        all_cameras[idx] = cam
+        save_config(self.app.data_dir, all_cameras)
+        self.app.monitor_app.root.after(0, self.app.monitor_app.reload_config)
+        self.app.cameras = list(all_cameras)
+        self._json({"ok": True, "camera": self._monitor_camera_dict(cam), "reload": True})
+
+    def _api_monitor_camera_delete(self, name: str) -> None:
+        """DELETE /api/monitor/cameras/<name>：删除相机。"""
+        from .config import load_config, save_config
+        self._require_monitor_app()
+        self._require_local()
+        all_cameras = load_config(self.app.data_dir)
+        kept = [c for c in all_cameras if c.name != name]
+        if len(kept) == len(all_cameras):
+            raise ApiError(404, f"未知相机：{name}")
+        save_config(self.app.data_dir, kept)
+        self.app.monitor_app.root.after(0, self.app.monitor_app.reload_config)
+        self.app.cameras = list(kept)
+        self._json({"ok": True, "deleted": name, "reload": True})
+
+    @staticmethod
+    def _parse_cells(raw) -> list:
+        from .config import CellConfig
+        out = []
+        for raw_cell in (raw or []):
+            if not isinstance(raw_cell, dict):
+                continue
+            name = str(raw_cell.get("name") or "").strip().upper()
+            if not name:
+                continue
+            out.append(CellConfig(
+                name=name,
+                data_type=raw_cell.get("data_type") or "float",
+                record_mode=raw_cell.get("record_mode") or "advanced",
+                sample_mode=raw_cell.get("sample_mode") or "event",
+                poll_interval=float(raw_cell.get("poll_interval") or 0.0),
+                lower=_optional_float(raw_cell.get("lower")),
+                upper=_optional_float(raw_cell.get("upper")),
+                unit=str(raw_cell.get("unit") or ""),
+                note=str(raw_cell.get("note") or ""),
+                role=str(raw_cell.get("role") or "auto"),
+                pass_values=list(raw_cell.get("pass_values") or []),
+                fail_values=list(raw_cell.get("fail_values") or []),
+            ))
+        return out
 
     def _api_summary(self, query: dict) -> None:
         app = self.app
@@ -1808,6 +1920,11 @@ class _Handler(BaseHTTPRequestHandler):
     # ---------- PATCH / DELETE ----------
 
     def _route_patch(self, path: str, query: dict) -> None:
+        # 相机配置更新（PATCH 同 PUT 语义）
+        if path.startswith("/api/monitor/cameras/") and not path.endswith("/values"):
+            name = unquote(path.rsplit("/", 1)[-1])
+            self._api_monitor_camera_update(name)
+            return
         if not path.startswith("/api/tickets/"):
             raise ApiError(404, "接口不存在")
         ticket_id = int(path.rsplit("/", 1)[-1])
@@ -1829,6 +1946,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(ticket)
 
     def _route_delete(self, path: str, query: dict) -> None:
+        # 相机配置删除
+        if path.startswith("/api/monitor/cameras/") and not path.endswith("/values"):
+            name = unquote(path.rsplit("/", 1)[-1])
+            self._api_monitor_camera_delete(name)
+            return
         if path == "/api/draft":
             day = self._day(query)
             self.app.storage.delete_draft(day.isoformat())
@@ -1863,6 +1985,16 @@ class _Handler(BaseHTTPRequestHandler):
 # ---------- 模块级单例 ----------
 
 _server: ReportServer | None = None
+
+
+def _optional_float(value) -> float | None:
+    """把可能为 None / 空串 / 'null' / 非数字的阈值统一转成 float | None。"""
+    if value in (None, "", "null"):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def start_web_server(storage, cameras: list[CameraConfig], settings: AppSettings,

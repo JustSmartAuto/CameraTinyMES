@@ -607,3 +607,37 @@ main.monitor.hidden { display: none; }
 .log-line.log-err  { color: #ff6b6b; }
 .log-line.log-warn { color: #f7c948; }
 .log-line.log-info { color: #99d6ff; }
+
+/* ---------- 相机编辑对话框 ---------- */
+
+#camDlgForm .form-row {
+  display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
+}
+#camDlgForm .form-row label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px;
+}
+#camDlgForm .form-row input,
+#camDlgForm select {
+  font-family: inherit; font-size: 13px; padding: 3px 5px;
+  border: 1px solid #c4b9a3; border-radius: 3px; background: #fffdf6;
+}
+#camDlgForm h4 { margin: 10px 0 6px; font-weight: 600; }
+
+.cell-table {
+  width: 100%; border-collapse: collapse; font-size: 12.5px;
+  margin-bottom: 8px;
+}
+.cell-table th, .cell-table td {
+  border: 1px solid #d5cfc1; padding: 3px 4px; text-align: left;
+}
+.cell-table th {
+  background: #eee9dc; font-weight: 600; font-size: 11.5px;
+}
+.cell-table input, .cell-table select {
+  width: 100%; box-sizing: border-box; padding: 2px 4px;
+  border: 1px solid #c4b9a3; border-radius: 2px; background: #fffdf6;
+  font-size: 12px;
+}
+.cell-table input[type=number] { width: 80px; }
+.cell-table .cname { text-transform: uppercase; }

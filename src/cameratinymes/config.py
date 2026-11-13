@@ -10,6 +10,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field, asdict
+from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "CameraTinyMES"
@@ -116,6 +117,7 @@ class CameraConfig:
     station: str = ""       # 工站号（OP10）；空则按相机名前缀推断
     station_name: str = ""  # 工站名（管壳合件组装）；报告 C 列第二行
     model: str = ""         # 机型/产品型号；报告 B 列
+    updated_at: str = ""    # 上次更新时间（ISO 字符串），用于 Web 端乐观锁
 
     @property
     def ws_url(self) -> str:
@@ -218,8 +220,10 @@ def load_config(data_dir: Path) -> list[CameraConfig]:
 def save_config(data_dir: Path, cameras: list[CameraConfig]) -> None:
     path = config_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    now_iso = datetime.now().isoformat(timespec="seconds")
     data = []
     for cam in cameras:
+        cam.updated_at = now_iso        # 每次保存都 bump，Web 端据此做乐观锁
         item = asdict(cam)
         # 新字段为默认值时省略，旧版程序读取时不会因未知字段报错
         for cell in item.get("cells", []):

@@ -2102,8 +2102,169 @@ async function exportCameraXlsx(camera) {
   } catch (err) { toast(err.message, 3000); }
 }
 
-function addCameraDialog() { toast('暂未实现：请先在桌面端添加相机', 2500); }
-function cameraConfigDialog(camera) { toast('暂未实现：请先在桌面端编辑相机', 2500); }
+function addCameraDialog() { cameraDialog(null); }
+function cameraConfigDialog(camera) { cameraDialog(camera); }
+
+function cameraDialog(camera) {
+  const isEdit = !!camera;
+  const title = isEdit ? `编辑相机：${camera.name}` : '添加相机';
+  const existing = camera || { name: '', host: '', port: 80, username: 'admin', password: '',
+                               enabled: true, reconnect_interval: 5, cells: defaultA0Cells() };
+  const formBody = renderCameraDialogBody(existing, isEdit);
+  const modalHtml = `
+    <h3>${esc(title)}</h3>
+    ${formBody}
+    <div class="modal-footer">
+      <button class="mini" data-close>取消</button>
+      <button class="mini primary" id="camDlgConfirm">保存</button>
+    </div>`;
+  openModal(modalHtml);
+  document.getElementById('camDlgConfirm').addEventListener('click', async () => {
+    const form = document.getElementById('camDlgForm');
+    const payload = parseCameraForm(form, isEdit);
+    if (isEdit) payload.base_updated_at = camera.updated_at;
+    try {
+      const method = isEdit ? 'PUT' : 'POST';
+      const url = isEdit
+        ? `/api/monitor/cameras/${encodeURIComponent(camera.name)}`
+        : '/api/monitor/cameras';
+      await api(url, { method, body: JSON.stringify(payload) });
+      toast(isEdit ? '已更新相机并触发 Tkinter 重载' : '已添加相机并触发 Tkinter 重载', 2500);
+      refreshMonitorCameras();
+      refreshMonitorStatus();
+      closeModal();
+    } catch (err) {
+      if (err.status === 409) {
+        if (confirm(`配置已被其他端更新：${err.data?.message || err.message}\n点击确定强制覆盖，取消则关闭。`)) {
+          payload.force = true;
+          try {
+            await api(url + '?force=1', { method, body: JSON.stringify(payload) });
+            toast('已强制覆盖', 2500);
+            refreshMonitorCameras();
+            refreshMonitorStatus();
+            closeModal();
+            return;
+          } catch (err2) { toast(err2.message, 3500); }
+        }
+      } else {
+        toast(err.message, 3500);
+      }
+    }
+  });
+}
+
+function defaultA0Cells() {
+  return [
+    { name: 'A0', data_type: 'image', record_mode: 'simple', sample_mode: 'event',
+      poll_interval: 0, lower: null, upper: null, unit: '', role: 'image',
+      pass_values: [], fail_values: [], note: '图片' },
+  ];
+}
+
+function renderCameraDialogBody(cam, isEdit) {
+  return `
+  <form id="camDlgForm">
+    <div class="form-row"><label>名称 <input name="name" value="${esc(cam.name)}" required ${isEdit ? 'readonly' : ''}></label>
+      <label>IP <input name="host" value="${esc(cam.host)}" required></label>
+      <label>端口 <input name="port" type="number" value="${cam.port}"></label>
+    </div>
+    <div class="form-row"><label>用户名 <input name="username" value="${esc(cam.username || 'admin')}"></label>
+      <label>密码 <input name="password" type="password" value="${esc(cam.password || '')}"></label>
+      <label><input name="enabled" type="checkbox" ${cam.enabled ? 'checked' : ''}> 启用</label>
+      <label>重连间隔 <input name="reconnect_interval" type="number" step="0.5" value="${cam.reconnect_interval ?? 5}"></label>
+    </div>
+    <div class="form-row"><label>工站号 <input name="station" value="${esc(cam.station || '')}" placeholder="OP10"></label>
+      <label>工站名 <input name="station_name" value="${esc(cam.station_name || '')}"></label>
+      <label>机型 <input name="model" value="${esc(cam.model || '')}"></label>
+    </div>
+    <h4 style="margin:10px 0 6px">单元格列表</h4>
+    <table class="cell-table" id="camDlgCellTable">
+      <thead><tr>
+        <th>名称</th><th>类型</th><th>记录</th><th>采样</th><th>下限</th><th>上限</th><th>单位</th><th>用途</th><th>通过值</th><th>不通过值</th><th>备注</th><th></th>
+      </tr></thead>
+      <tbody>${cam.cells.map((c, i) => renderCellRow(c, i)).join('')}</tbody>
+    </table>
+    <button type="button" class="mini primary" id="camDlgAddCell">+ 添加单元格</button>
+  </form>
+  <script>
+    document.getElementById('camDlgAddCell')?.addEventListener('click', () => {
+      const tbody = document.querySelector('#camDlgCellTable tbody');
+      const idx = tbody.children.length;
+      const tr = document.createElement('tr');
+      tr.innerHTML = ${JSON.stringify(renderCellRow({ name: '', data_type: 'float', record_mode: 'advanced', sample_mode: 'event', poll_interval: 0, lower: null, upper: null, unit: '', role: 'auto', pass_values: [], fail_values: [], note: '' }, 'NEW')).replace(/"/g, "'")};
+      tbody.appendChild(tr);
+      tr.querySelector('input[name=name]').focus();
+    });
+  </script>`;
+}
+
+function renderCellRow(c, key) {
+  const dts = ['float','int','string','bool','image','pointcloud'];
+  const roles = ['auto','result','image','data'];
+  const recs = ['advanced','simple'];
+  const samples = ['event','poll','both'];
+  const sel = (arr, cur) => arr.map(v => `<option ${v===cur?'selected':''}>${v}</option>`).join('');
+  return `<tr>
+    <td><input class="cname" value="${esc(c.name)}"></td>
+    <td><select class="cdt">${sel(dts, c.data_type)}</select></td>
+    <td><select class="crc">${sel(recs, c.record_mode)}</select></td>
+    <td><select class="csm">${sel(samples, c.sample_mode)}</select></td>
+    <td><input class="cl" type="number" step="0.001" value="${c.lower ?? ''}"></td>
+    <td><input class="cu" type="number" step="0.001" value="${c.upper ?? ''}"></td>
+    <td><input class="cu2" value="${esc(c.unit || '')}"></td>
+    <td><select class="cr">${sel(roles, c.role || 'auto')}</select></td>
+    <td><input class="cp" placeholder="逗号分隔 OK" value="${esc((c.pass_values||[]).join(','))}"></td>
+    <td><input class="cf" placeholder="逗号分隔 NG" value="${esc((c.fail_values||[]).join(','))}"></td>
+    <td><input class="cn" value="${esc(c.note || '')}"></td>
+    <td><button type="button" class="mini del-cell">删除</button></td>
+  </tr>`;
+}
+
+function parseCellRow(tr) {
+  const $ = (sel) => tr.querySelector(sel);
+  const roleRaw = $('select.cr').value;
+  return {
+    name: $('input.cname').value.trim().toUpperCase(),
+    data_type: $('select.cdt').value,
+    record_mode: $('select.crc').value,
+    sample_mode: $('select.csm').value,
+    poll_interval: 0.0,
+    lower: parseFloat($('input.cl').value) || null,
+    upper: parseFloat($('input.cu').value) || null,
+    unit: $('input.cu2').value.trim(),
+    role: roleRaw === 'auto' ? 'auto' : roleRaw,
+    pass_values: $('input.cp').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean),
+    fail_values: $('input.cf').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean),
+    note: $('input.cn').value.trim(),
+  };
+}
+
+function parseCameraForm(form, isEdit) {
+  const fd = new FormData(form);
+  const ports = fd.get('port');
+  const cells = [...form.querySelectorAll('#camDlgCellTable tbody tr')]
+    .map(parseCellRow).filter(c => c.name);
+  return {
+    name: fd.get('name').trim(),
+    host: fd.get('host').trim(),
+    port: parseInt(ports) || 80,
+    username: fd.get('username') || 'admin',
+    password: fd.get('password') || '',
+    enabled: fd.get('enabled') === 'on',
+    reconnect_interval: parseFloat(fd.get('reconnect_interval')) || 5.0,
+    model: fd.get('model') || '',
+    station: fd.get('station') || '',
+    station_name: fd.get('station_name') || '',
+    cells,
+  };
+}
+
+// 单元格行删除事件委托
+document.addEventListener('click', (evt) => {
+  if (evt.target.classList.contains('del-cell')) {
+    evt.target.closest('tr').remove();
+  }
+});
 
 /* ---------- 启动 ---------- */
 
