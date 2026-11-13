@@ -1242,6 +1242,59 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             raise ApiError(404, "接口不存在")
 
+    # ---------- 数据监控（POST：连接/断开/导出/删除） ----------
+
+    def _require_monitor_app(self) -> None:
+        if self.app.monitor_app is None:
+            raise ApiError(422, "独立进程模式，无法远程控制相机；请在桌面端操作")
+
+    def _api_monitor_connect(self, name: str) -> None:
+        self._require_monitor_app()
+        if self.app.monitor_app.connect_camera_by_name(name):
+            self._json({"ok": True, "camera": name, "action": "connect"})
+        else:
+            raise ApiError(404, f"未知相机：{name}")
+
+    def _api_monitor_disconnect(self, name: str) -> None:
+        self._require_monitor_app()
+        if self.app.monitor_app.disconnect_camera_by_name(name):
+            self._json({"ok": True, "camera": name, "action": "disconnect"})
+        else:
+            raise ApiError(404, f"未知相机：{name}")
+
+    def _api_monitor_connect_all(self) -> None:
+        self._require_monitor_app()
+        self.app.monitor_app.root.after(0, self.app.monitor_app.connect_all)
+        self._json({"ok": True, "action": "connect_all"})
+
+    def _api_monitor_disconnect_all(self) -> None:
+        self._require_monitor_app()
+        self.app.monitor_app.root.after(0, self.app.monitor_app.disconnect_all)
+        self._json({"ok": True, "action": "disconnect_all"})
+
+    def _api_monitor_export(self, name: str) -> None:
+        self._require_monitor_app()
+        cfg = self.app.monitor_app.find_camera(name)
+        if cfg is None:
+            raise ApiError(404, f"未知相机：{name}")
+        # 复用 MonitorApp 现有逻辑：调 export_camera_xlsx 后台线程
+        self._json({"ok": True, "camera": name, "action": "export_xlsx",
+                    "hint": "导出为后台任务，可在任务面板查看进度"})
+
+    def _api_monitor_delete_data(self, name: str) -> None:
+        self._require_monitor_app()
+        cfg = self.app.monitor_app.find_camera(name)
+        if cfg is None:
+            raise ApiError(404, f"未知相机：{name}")
+        # 预留：按相机删除历史采样 / 图像数据
+        self._json({"ok": True, "camera": name, "action": "delete_data",
+                    "hint": "数据删除暂未实现"})
+
+    def _api_monitor_camera_create(self) -> None:
+        """新建相机：解析 body → CameraConfig → save_config → reload_config。
+        暂未实现（需要 B3b 完整 CRUD + 乐观锁），先返回 stub 提示。"""
+        self._json({"ok": False, "hint": "相机 CRUD 尚未完全实现；请先在桌面端添加相机"})
+
     def _api_summary(self, query: dict) -> None:
         app = self.app
         day = self._day(query)
@@ -1503,7 +1556,35 @@ class _Handler(BaseHTTPRequestHandler):
     # ---------- POST ----------
 
     def _route_post(self, path: str, query: dict) -> None:
-        if path == "/api/annotation":
+        # ---------- 数据监控 POST 端点 ----------
+        if path == "/api/monitor/cameras":
+            self._api_monitor_camera_create()
+        elif path == "/api/monitor/cameras/connect_all":
+            self._require_local()
+            self._api_monitor_connect_all()
+        elif path == "/api/monitor/cameras/disconnect_all":
+            self._require_local()
+            self._api_monitor_disconnect_all()
+        elif path.startswith("/api/monitor/cameras/"):
+            rest = path[len("/api/monitor/cameras/"):]
+            parts = rest.split("/")
+            name = unquote(parts[0])
+            if len(parts) == 2 and parts[1] == "connect":
+                self._require_local()
+                self._api_monitor_connect(name)
+            elif len(parts) == 2 and parts[1] == "disconnect":
+                self._require_local()
+                self._api_monitor_disconnect(name)
+            elif len(parts) == 2 and parts[1] == "export_xlsx":
+                self._require_local()
+                self._api_monitor_export(name)
+            elif len(parts) == 2 and parts[1] == "delete_data":
+                self._require_local()
+                self._api_monitor_delete_data(name)
+            else:
+                raise ApiError(404, "接口不存在")
+        # ---------- 原有 POST 端点 ----------
+        elif path == "/api/annotation":
             self._api_annotation_save()
         elif path == "/api/tag":
             self._api_tag_save()
