@@ -10,13 +10,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
+import queue
 import socket
+import struct
 import sys
 import threading
+import time
 from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -210,7 +215,8 @@ class ReportServer:
 
     def __init__(self, storage, cameras: list[CameraConfig], settings: AppSettings,
                  data_dir: Path, cfg: ReportConfig | None = None,
-                 tasks: TaskManager | None = None):
+                 tasks: TaskManager | None = None,
+                 monitor=None, monitor_app=None):
         from .config import load_report_config
 
         self.storage = storage
@@ -230,6 +236,19 @@ class ReportServer:
         self._cleanup_stop = threading.Event()
         self._cleanup_thread: threading.Thread | None = None
         self._frames = _FrameCache()
+
+        # ---------- 数据监控 WebSocket 扩展 ----------
+        self.monitor = monitor            # Worker 事件总线（多订阅者）
+        self.monitor_app = monitor_app    # MonitorApp，用于 find_camera / reload_config / root.after
+        self._live_cache: dict[tuple[str, str], list[tuple[str, object]]] = {}
+        self._live_lock = threading.Lock()
+        # WS 客户端集合：每个是 handler 自己的 connection socket
+        self._ws_clients: set = set()
+        self._ws_lock = threading.Lock()
+        self._ws_monitor_q = None         # Monitor 订阅者 queue
+        self._ws_monitor_thread: threading.Thread | None = None
+        self._db_monitor_q = None         # db_status_q 订阅者 queue
+        self._db_monitor_thread: threading.Thread | None = None
 
     # ---------- 生命周期 ----------
 
@@ -271,11 +290,40 @@ class ReportServer:
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop,
                                                 name="report-purge", daemon=True)
         self._cleanup_thread.start()
+
+        # 启动数据监控 WebSocket 推送线程（仅桌面端有 Monitor 时有效；
+        # web_only.py 独立进程 monitor=None，WS 端点降级为 standalone 提示）
+        if self.monitor is not None:
+            try:
+                self._ws_monitor_q = self.monitor.subscribe(maxsize=500)
+                self._ws_monitor_thread = threading.Thread(
+                    target=self._ws_push_loop, name="report-ws-push", daemon=True)
+                self._ws_monitor_thread.start()
+                log.info("数据监控 WS 推送线程已启动")
+            except Exception as exc:
+                log.warning("启动 WS 推送线程失败: %s", exc)
+        if self.monitor_app is not None:
+            try:
+                self._db_monitor_q = self.monitor_app.subscribe_db(maxsize=10)
+                self._db_monitor_thread = threading.Thread(
+                    target=self._db_push_loop, name="report-db-push", daemon=True)
+                self._db_monitor_thread.start()
+            except Exception as exc:
+                log.warning("启动 DB 推送线程失败: %s", exc)
+
         log.info("报告工作台已启动：http://%s:%s/report", host, self.port)
         return self.port
 
     def stop(self) -> None:
         self._cleanup_stop.set()
+        # 关闭所有 WS 客户端连接
+        with self._ws_lock:
+            for sock in list(self._ws_clients):
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            self._ws_clients.clear()
         if self._httpd is not None:
             try:
                 self._httpd.shutdown()
@@ -308,6 +356,101 @@ class ReportServer:
                 log.warning("报告存档清理失败：%s", exc)
             if self._cleanup_stop.wait(24 * 3600):
                 return
+
+    # ---------- 数据监控 WebSocket ----------
+
+    def _ws_push_loop(self) -> None:
+        """100ms poll Monitor 事件 queue → 更新 LiveCache → 广播所有 WS clients。"""
+        assert self._ws_monitor_q is not None
+        while not self._cleanup_stop.is_set():
+            try:
+                while True:
+                    camera, kind, payload = self._ws_monitor_q.get_nowait()
+                    self._update_live_cache(camera, kind, payload)
+                    self._ws_broadcast_sync(json.dumps({
+                        "t": time.time(), "k": kind, "c": camera, "p": payload,
+                    }, ensure_ascii=False))
+            except queue.Empty:
+                pass
+            # 节流：无新事件时短暂 sleep，避免 100% CPU
+            self._cleanup_stop.wait(0.1)
+
+    def _db_push_loop(self) -> None:
+        """5s poll db_status_q → 广播 DB 健康给所有 WS clients。"""
+        assert self._db_monitor_q is not None
+        while not self._cleanup_stop.is_set():
+            try:
+                ok, size = self._db_monitor_q.get_nowait()
+                msg = json.dumps({
+                    "t": time.time(), "k": "db_status",
+                    "ok": bool(ok),
+                    "size_mb": float(size) if size is not None else None,
+                    "backend": self.storage.backend,
+                }, ensure_ascii=False)
+                self._ws_broadcast_sync(msg)
+            except queue.Empty:
+                pass
+            if self._cleanup_stop.wait(0.5):
+                return
+
+    def _update_live_cache(self, camera: str, kind: str, payload) -> None:
+        """把最新实时值 / 状态塞进 LiveCache；按相机×单元格键 LRU 200 条。"""
+        if kind == "result" and isinstance(payload, dict):
+            with self._live_lock:
+                for cell, value in payload.items():
+                    key = (camera, cell)
+                    lst = self._live_cache.get(key)
+                    if lst is None:
+                        lst = []
+                        self._live_cache[key] = lst
+                    lst.append((time.time(), value))
+                    if len(lst) > 200:
+                        del lst[:len(lst) - 200]
+        # connected/disconnected/job 事件也记一条状态，方便新客上线快照
+        elif kind in ("connected", "disconnected", "error", "job"):
+            with self._live_lock:
+                # 用 (kind, value) 格式区分"数据值"与"状态事件"
+                lst = self._live_cache.setdefault((camera, f"__status__"), [])
+                lst.append((time.time(), (kind, payload)))
+                if len(lst) > 200:
+                    del lst[:len(lst) - 200]
+
+    def _ws_broadcast_sync(self, message: str) -> None:
+        """同步广播到所有已连接 WS 客户端；客户端自身断连由 handler 清理。"""
+        data = message.encode("utf-8")
+        frame = self._ws_text_frame(data)
+        with self._ws_lock:
+            clients = list(self._ws_clients)
+        for sock in clients:
+            try:
+                sock.sendall(frame)
+            except (BrokenPipeError, OSError):
+                with self._ws_lock:
+                    self._ws_clients.discard(sock)
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+
+    @staticmethod
+    def _ws_text_frame(data: bytes) -> bytes:
+        """构建一个无掩码的 WebSocket 文本帧（服务端→客户端可不掩码）。"""
+        n = len(data)
+        if n < 126:
+            return b"\x81" + bytes([n]) + data
+        if n < 1 << 16:
+            return b"\x81" + bytes([126]) + struct.pack(">H", n) + data
+        return b"\x81" + bytes([127]) + struct.pack(">Q", n) + data
+
+    def _ws_snapshot_history(self) -> dict:
+        """给新上线 WS 客户端推的快照（每相机每单元格最近 200 点）。"""
+        snapshot: dict[str, dict[str, list]] = {}
+        with self._live_lock:
+            for (camera, cell), lst in self._live_cache.items():
+                snapshot.setdefault(camera, {})[cell] = [
+                    [ts, val] for ts, val in lst
+                ]
+        return {"t": time.time(), "k": "history", "p": snapshot}
 
     # ---------- 生成任务 ----------
 
@@ -558,6 +701,15 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         path = unquote(parsed.path)
         query = parse_qs(parsed.query)
+        # WebSocket Upgrade 拦截（不走 HTTP 路由）
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            try:
+                self._token_ok(query) or self._token_ok({})
+            except Exception:
+                pass  # WS 握手 token 校验在 _handle_websocket 里单独做
+            if path == "/ws":
+                self._handle_websocket(query)
+                return
         try:
             if not self._token_ok(query):
                 if path.startswith("/api/"):
@@ -580,6 +732,127 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             log.exception("处理 %s %s 失败", method, path)
             self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, 500)
+
+    # ---------- WebSocket ----------
+
+    def _handle_websocket(self, query: dict) -> None:
+        """/ws 端点：RFC 6455 握手 + 帧循环（客户端→服务端仅需响应 close/ping）。
+
+        只读服务端→客户端（数据事件 / DB 状态 / history 快照），
+        客户端发 ping/close 时简单响应；无掩码帧校验（浏览器客户端一律掩码，
+        但我们只需正确解帧即可，不必严格校验掩码）。
+        """
+        app = self.app
+        # token 校验
+        if app.token and not self._token_ok(query):
+            self._send(401, b"WS auth required", "text/plain")
+            return
+
+        # Standalone 降级：没有 Monitor 只能推 history
+        standalone = app.monitor is None
+
+        # WebSocket 握手
+        ws_key = self.headers.get("Sec-WebSocket-Key", "")
+        if not ws_key:
+            self._send(400, b"missing Sec-WebSocket-Key", "text/plain")
+            return
+        accept = base64.b64encode(hashlib.sha1(
+            (ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
+        ).digest()).decode()
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+
+        conn = self.connection
+        # 注册到 ReportServer 客户端集合（broadcast loop 自动下发事件）
+        with app._ws_lock:
+            app._ws_clients.add(conn)
+        log.info("WS client connected (standalone=%s) from %s",
+                 standalone, self.client_address[0])
+
+        # 立即推一份 history 快照（让新客上线即有数据可看）
+        try:
+            snapshot = json.dumps(app._ws_snapshot_history(), ensure_ascii=False)
+            conn.sendall(app._ws_text_frame(snapshot.encode("utf-8")))
+            if standalone:
+                app._ws_broadcast_sync(json.dumps({
+                    "t": time.time(), "k": "standalone",
+                    "msg": "独立进程启动，仅提供历史查询，无实时事件",
+                }, ensure_ascii=False))
+        except Exception:
+            pass
+
+        # 帧读循环：只处理客户端发来的 close/ping；text/data 忽略
+        buf = b""
+        try:
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                while len(buf) >= 2:
+                    opcode = buf[0] & 0x0F
+                    masked = (buf[1] & 0x80) != 0
+                    payload_len = buf[1] & 0x7F
+                    idx = 2
+                    if payload_len == 126:
+                        if len(buf) < idx + 2:
+                            break
+                        payload_len = struct.unpack(">H", buf[idx:idx + 2])[0]
+                        idx += 2
+                    elif payload_len == 127:
+                        if len(buf) < idx + 8:
+                            break
+                        payload_len = struct.unpack(">Q", buf[idx:idx + 8])[0]
+                        idx += 8
+                    if masked:
+                        if len(buf) < idx + 4:
+                            break
+                        mask = buf[idx:idx + 4]
+                        idx += 4
+                    else:
+                        mask = None
+                    if len(buf) < idx + payload_len:
+                        break
+                    if mask:
+                        payload = bytes(b ^ mask[i % 4]
+                                         for i, b in enumerate(buf[idx:idx + payload_len]))
+                    else:
+                        payload = buf[idx:idx + payload_len]
+                    buf = buf[idx + payload_len:]
+
+                    if opcode == 0x8:  # close
+                        try:
+                            # 回一个 close
+                            conn.sendall(app._ws_text_frame(b""))
+                        except Exception:
+                            pass
+                        return
+                    elif opcode == 0x9:  # ping → pong
+                        frame = bytearray()
+                        frame.append(0x8A)
+                        if len(payload) < 126:
+                            frame.append(len(payload))
+                        else:
+                            frame.append(126)
+                            frame += struct.pack(">H", len(payload))
+                        try:
+                            conn.sendall(bytes(frame) + payload)
+                        except Exception:
+                            return
+                    # text/binary 数据帧忽略即可
+        except Exception as exc:
+            log.debug("WS frame loop %s error: %s", self.client_address[0], exc)
+        finally:
+            with app._ws_lock:
+                app._ws_clients.discard(conn)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            log.info("WS client disconnected from %s", self.client_address[0])
 
     # ---------- 安全 ----------
 
@@ -734,6 +1007,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._api_okng(query)
         elif path == "/api/config":
             self._api_config()
+        elif path == "/api/monitor/status":
+            self._api_monitor_status()
+        elif path == "/api/monitor/cameras":
+            self._api_monitor_cameras()
+        elif path.startswith("/api/monitor/cameras/"):
+            self._api_monitor_camera_routes(path, query)
         elif path == "/api/summary":
             self._api_summary(query)
         elif path.startswith("/api/station/"):
@@ -822,6 +1101,146 @@ class _Handler(BaseHTTPRequestHandler):
             "token_required": bool(app.token),
             "urls": app.urls(),
         })
+
+    # ---------- 数据监控（GET） ----------
+
+    def _api_monitor_status(self) -> None:
+        """数据库健康 + AV1 压缩 + WS 客户端数 + 相机在线数（来自 LiveCache / Monitor）。"""
+        app = self.app
+        db_ok = app.storage.health_check()
+        db_size = app.storage.database_size_mb() if db_ok else None
+        if app.monitor is None:
+            self._json({
+                "mode": "standalone",
+                "db": {"ok": db_ok, "size_mb": db_size,
+                       "backend": app.storage.backend},
+                "av1": {"enabled": False, "runs": 0, "frames": 0,
+                        "orig_mb": 0.0, "new_mb": 0.0, "ratio": 0.0,
+                        "saved_mb": 0.0},
+                "cameras_total": len(app.cameras),
+                "cameras_online": None,
+                "ws_clients": len(app._ws_clients),
+                "token_required": bool(app.token),
+            })
+            return
+
+        compressor = app.monitor.compressor
+        stats = compressor.stats if compressor else {}
+        runs = stats.get("runs", 0)
+        online = 0
+        with app._live_lock:
+            for (cam, _), lst in app._live_cache.items():
+                if cam.startswith("__"):
+                    continue
+                for _ts, val in lst:
+                    if isinstance(val, tuple) and val[0] == "connected":
+                        online += 1
+                        break
+
+        self._json({
+            "mode": "live",
+            "db": {"ok": db_ok, "size_mb": db_size,
+                   "backend": app.storage.backend},
+            "av1": {
+                "enabled": bool(compressor and compressor.enabled),
+                "runs": runs,
+                "frames": stats.get("frames", 0),
+                "orig_mb": stats.get("orig_bytes", 0.0) / 1024 / 1024,
+                "new_mb": stats.get("new_bytes", 0.0) / 1024 / 1024,
+                "ratio": ((stats.get("orig_bytes", 0.0)
+                          / stats.get("new_bytes", 1.0))
+                          if stats.get("new_bytes", 0) else 0.0),
+                "saved_mb": stats.get("saved_bytes", 0.0) / 1024 / 1024,
+            },
+            "cameras_total": len(app.cameras),
+            "cameras_online": online,
+            "ws_clients": len(app._ws_clients),
+            "token_required": bool(app.token),
+            "has_monitor_app": app.monitor_app is not None,
+        })
+
+    def _api_monitor_cameras(self) -> None:
+        """完整相机配置列表（含 cells 列表）。"""
+        cameras = []
+        for cam in self.app.cameras:
+            cameras.append(self._monitor_camera_dict(cam))
+        self._json({"cameras": cameras,
+                    "has_monitor": self.app.monitor is not None})
+
+    def _monitor_camera_dict(self, cam: CameraConfig) -> dict:
+        """把 CameraConfig 序列化成 dict（带 cells，Web 前后端都用同一份）。"""
+        return {
+            "name": cam.name, "host": cam.host, "port": cam.port,
+            "model": cam.model, "enabled": cam.enabled,
+            "username": cam.username,
+            "reconnect_interval": cam.reconnect_interval,
+            "cells": [self._monitor_cell_dict(c) for c in cam.cells],
+        }
+
+    @staticmethod
+    def _monitor_cell_dict(cell) -> dict:
+        """把 CellConfig 序列化成 dict（Web 前端编辑后直接 POST/PUT 回来）。"""
+        return {
+            "name": cell.name,
+            "data_type": cell.data_type,
+            "record_mode": cell.record_mode,
+            "sample_mode": cell.sample_mode,
+            "poll_interval": cell.poll_interval,
+            "lower": cell.lower,
+            "upper": cell.upper,
+            "unit": cell.unit,
+            "note": cell.note,
+            "role": cell.role,
+            "pass_values": list(cell.pass_values),
+            "fail_values": list(cell.fail_values),
+        }
+
+    def _api_monitor_camera_routes(self, path: str, query: dict) -> None:
+        """/api/monitor/cameras/<name>[/cells/<cell>/values]"""
+        rest = path[len("/api/monitor/cameras/"):]
+        parts = rest.split("/")
+        name = parts[0]
+        if len(parts) == 1:
+            cam = next((c for c in self.app.cameras if c.name == name), None)
+            if cam is None:
+                raise ApiError(404, f"未知相机：{name}")
+            # 附加 LiveCache 状态
+            result = self._monitor_camera_dict(cam)
+            with self.app._live_lock:
+                status_key = (name, "__status__")
+                live = self.app._live_cache.get(status_key, [])
+                result["live_status"] = live[-1][1] if live else None
+                # 最新值快照：每个单元格最近一个值
+                snap = {}
+                for (cn, cl), lst in self.app._live_cache.items():
+                    if cn == name and cl != "__status__" and lst:
+                        snap[cl] = lst[-1][1]
+                result["live_values"] = snap
+            self._json(result)
+        elif len(parts) == 4 and parts[1] == "cells" and parts[3] == "values":
+            cell_name = unquote(parts[2])
+            cam = next((c for c in self.app.cameras if c.name == name), None)
+            if cam is None:
+                raise ApiError(404, f"未知相机：{name}")
+            cell_cfg = next((c for c in cam.cells if c.name == cell_name), None)
+            if cell_cfg is None:
+                raise ApiError(404, f"未知单元格：{cell_name}")
+            from_vals = query.get("from")
+            to_vals = query.get("to")
+            limit = min(5000, max(50, int((query.get("limit") or ["5000"])[0])))
+            ts_from = from_vals[0] if from_vals else None
+            ts_to = to_vals[0] if to_vals else None
+            points = self.app.storage.range_cell_values(
+                name, cell_name, ts_from=ts_from, ts_to=ts_to, limit=limit)
+            self._json({
+                "camera": name, "cell": cell_name,
+                "from": ts_from, "to": ts_to, "limit": limit,
+                "points": points,
+                "lower_limit": cell_cfg.lower, "upper_limit": cell_cfg.upper,
+                "sample_mode": cell_cfg.sample_mode,
+            })
+        else:
+            raise ApiError(404, "接口不存在")
 
     def _api_summary(self, query: dict) -> None:
         app = self.app
@@ -1367,12 +1786,18 @@ _server: ReportServer | None = None
 
 def start_web_server(storage, cameras: list[CameraConfig], settings: AppSettings,
                      data_dir: Path, cfg: ReportConfig | None = None,
-                     on_open_entry=None) -> int:
-    """启动工作台（幂等），返回实际端口。"""
+                     on_open_entry=None,
+                     monitor=None, monitor_app=None) -> int:
+    """启动工作台（幂等），返回实际端口。
+
+    monitor=None / monitor_app=None 时 WS 端点降级为 standalone 模式
+    （web_only.py 独立进程启动场景）。
+    """
     global _server
     if _server is not None:
         return _server.port
-    _server = ReportServer(storage, cameras, settings, data_dir, cfg)
+    _server = ReportServer(storage, cameras, settings, data_dir, cfg,
+                           monitor=monitor, monitor_app=monitor_app)
     _server.on_open_entry = on_open_entry
     try:
         return _server.start()

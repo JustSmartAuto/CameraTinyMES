@@ -50,12 +50,12 @@ def judge(value, cell: CellConfig) -> bool | None:
 class CameraWorker:
     """驱动单台相机的连接-订阅-落库循环。"""
 
-    def __init__(self, cfg: CameraConfig, storage: StorageBase, events: queue.Queue,
+    def __init__(self, cfg: CameraConfig, storage: StorageBase, monitor: "Monitor",
                  writer: ImageStreamWriter | None = None):
         self.cfg = cfg
         self.storage = storage
         self.writer = writer      # AV1 帧序列写入器；None 时逐张 JPEG 入库
-        self.events = events  # UI 侧队列，消息为 (camera, kind, payload)
+        self._monitor = monitor   # Monitor 事件总线（多订阅者，内部会扇出）
         self.client = CogSocketClient(cfg.host, cfg.port, cfg.username, cfg.password)
         self.job: str | None = None  # 相机当前作业名（jobx 配方），随采样一起落库
         self._task: asyncio.Task | None = None
@@ -88,10 +88,7 @@ class CameraWorker:
         await self.client.close()
 
     def _push(self, kind: str, payload=None) -> None:
-        try:
-            self.events.put_nowait((self.cfg.name, kind, payload))
-        except queue.Full:
-            pass
+        self._monitor.push(self.cfg.name, kind, payload)
 
     @staticmethod
     def _detect_media(hmi_result: dict,
@@ -420,7 +417,7 @@ class CameraWorker:
 
 
 class Monitor:
-    """管理所有相机 Worker 与事件总线。"""
+    """管理所有相机 Worker 与事件总线（多订阅者，独立 queue 扇出）。"""
 
     def __init__(self, storage: StorageBase):
         from .videocodec import BackgroundImageCompressor
@@ -429,14 +426,34 @@ class Monitor:
         # worker 直接写 images 表，compressor 攒够 30 帧再统一编码
         self.writer = None
         self.compressor = BackgroundImageCompressor(storage)
-        self.events: queue.Queue = queue.Queue(maxsize=1000)
+        self._queues: list[queue.Queue] = []
+        # 默认订阅者（Tkinter 主界面）；其他模块可 subscribe(maxsize=...) 追加独立 queue
+        self.events = self.subscribe(maxsize=1000)
         self.workers: dict[str, CameraWorker] = {}
+
+    # ---------- 事件总线 ----------
+
+    def subscribe(self, maxsize: int = 1000) -> queue.Queue:
+        """追加一个订阅者 queue，返回它供调用方 poll。"""
+        q: queue.Queue = queue.Queue(maxsize=maxsize)
+        self._queues.append(q)
+        return q
+
+    def push(self, camera_name: str, kind: str, payload=None) -> None:
+        """把事件扇出到所有订阅者 queue；单队列满则丢该队列的事件，不阻塞调用方。"""
+        for q in self._queues:
+            try:
+                q.put_nowait((camera_name, kind, payload))
+            except queue.Full:
+                pass
+
+    # ---------- 相机生命周期 ----------
 
     async def start_camera(self, cfg: CameraConfig) -> None:
         worker = self.workers.get(cfg.name)
         if worker and worker.running:
             return
-        worker = CameraWorker(cfg, self.storage, self.events, self.writer)
+        worker = CameraWorker(cfg, self.storage, self, self.writer)
         self.workers[cfg.name] = worker
         await worker.start()
 
@@ -444,10 +461,7 @@ class Monitor:
         worker = self.workers.pop(name, None)
         if worker:
             await worker.stop()
-        try:
-            self.events.put_nowait((name, "disconnected", None))
-        except queue.Full:
-            pass
+        self.push(name, "disconnected", None)
 
     async def stop_all(self) -> None:
         for name in list(self.workers):

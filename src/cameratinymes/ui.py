@@ -22,6 +22,7 @@ from .config import (
     AppSettings,
     CameraConfig, CellConfig,
     CELL_DATA_TYPES, CELL_RECORD_MODES, CELL_ROLES, NUMERIC_DATA_TYPES,
+    load_config,
     result_specs,
     save_config, save_settings,
 )
@@ -386,7 +387,9 @@ class MonitorApp:
         self.storage = open_storage(data_dir)
         self.monitor = Monitor(self.storage)
         self.panels: dict[str, CameraPanel] = {}
-        self._db_status_q: queue.Queue[tuple[bool, float | None]] = queue.Queue()
+        self._db_queues: list[queue.Queue[tuple[bool, float | None]]] = []
+        self._db_status_q: queue.Queue[tuple[bool, float | None]] = queue.Queue(maxsize=10)
+        self._db_queues.append(self._db_status_q)
         self._db_stop = threading.Event()
         self._db_ok: bool | None = None
         self._compress_tick = 0  # 压缩状态刷新计时器（每 50 × 100ms = 5s）
@@ -622,6 +625,76 @@ class MonitorApp:
     def disconnect_all(self) -> None:
         self._submit(self.monitor.stop_all())
 
+    # ---------- Web 后端公开桥接方法 ----------
+
+    def find_camera(self, name: str) -> CameraConfig | None:
+        return next((c for c in self.cameras if c.name == name), None)
+
+    def find_camera_idx(self, name: str) -> int:
+        for i, c in enumerate(self.cameras):
+            if c.name == name:
+                return i
+        return -1
+
+    def connect_camera_by_name(self, name: str) -> bool:
+        cfg = self.find_camera(name)
+        if cfg is None:
+            return False
+        self.connect_camera(cfg)
+        return True
+
+    def disconnect_camera_by_name(self, name: str) -> bool:
+        if self.find_camera(name) is None:
+            return False
+        self.disconnect_camera(name)
+        return True
+
+    def reload_config(self) -> None:
+        """读取 cameras.json 最新内容，Worker diff stop/start，重建面板。
+        必须在 tk 主线程执行：Web 后端通过 root.after(0, ...) 调度。"""
+        try:
+            new_list = load_config(self.data_dir)
+        except Exception as exc:
+            self._log(f"reload_config 读 cameras.json 失败: {exc}")
+            return
+
+        # 停掉"不再存在"或"被禁用"或"单元格集合变化"的 Worker
+        new_by_name = {c.name: c for c in new_list}
+        old_by_name = {c.name: c for c in self.cameras}
+        stop_names: set[str] = set()
+        for name, old_cfg in old_by_name.items():
+            new_cfg = new_by_name.get(name)
+            if new_cfg is None:
+                stop_names.add(name)
+            elif (old_cfg.enabled and not new_cfg.enabled):
+                stop_names.add(name)
+            elif ([(c.name, c.data_type, c.sample_mode) for c in old_cfg.cells]
+                  != [(c.name, c.data_type, c.sample_mode) for c in new_cfg.cells]):
+                # 单元格集合变化 → session 已按旧列表打开，必须重开
+                stop_names.add(name)
+
+        if stop_names:
+            async def _stop_them():
+                for name in stop_names:
+                    await self.monitor.stop_camera(name)
+            self._submit(_stop_them())
+
+        # 替换内存状态 + 立即重建面板（Worker 异步重连，面板显示"连接中"）
+        self.cameras = new_list
+        self._rebuild_grid()
+
+        # 自动启动新启用的相机
+        for cfg in self.cameras:
+            if cfg.enabled and cfg.name not in old_by_name:
+                self.connect_camera(cfg)
+        # 被禁用/变更的相机：等 Worker 停完后由用户或系统自动重连（若仍 enabled）
+        for cfg in self.cameras:
+            if cfg.enabled and cfg.name in stop_names:
+                self.connect_camera(cfg)
+
+        self._report_server.cameras = list(self.cameras) if self._report_server else None
+        self._log(f"配置已热重载：{len(self.cameras)} 台相机，停 {len(stop_names)} 台")
+
     # ---------- 事件轮询 ----------
 
     def _poll_events(self) -> None:
@@ -680,14 +753,25 @@ class MonitorApp:
             self._compress_status.config(text=text, fg=C["teal"])
 
     def _start_db_monitor(self) -> None:
-        """后台线程每 5 秒检查一次连接与数据尺寸，结果交给 UI 线程更新状态。"""
+        """后台线程每 5 秒检查一次连接与数据尺寸，结果扇出到所有 db 订阅者。"""
         def loop() -> None:
             while not self._db_stop.is_set():
                 ok = self.storage.health_check()
-                self._db_status_q.put((ok, self.storage.database_size_mb() if ok else None))
+                payload = (ok, self.storage.database_size_mb() if ok else None)
+                for q in list(self._db_queues):
+                    try:
+                        q.put_nowait(payload)
+                    except queue.Full:
+                        pass
                 self._db_stop.wait(5)
 
         threading.Thread(target=loop, name="db-health", daemon=True).start()
+
+    def subscribe_db(self, maxsize: int = 10) -> queue.Queue:
+        """追加一个数据库健康订阅者 queue（Web 后端 WS 循环用）。"""
+        q: queue.Queue[tuple[bool, float | None]] = queue.Queue(maxsize=maxsize)
+        self._db_queues.append(q)
+        return q
 
     def _apply_db_status(self, ok: bool, size_mb: float | None) -> None:
         name = {"sqlite": "SQLite", "mariadb": "MariaDB"}.get(self.storage.backend,
@@ -922,7 +1006,8 @@ class MonitorApp:
         try:
             port = web.start_web_server(
                 self.storage, self.cameras, self.settings, self.data_dir,
-                on_open_entry=self._open_entry_from_web)
+                on_open_entry=self._open_entry_from_web,
+                monitor=self.monitor, monitor_app=self)
             self._report_server = web.get_web_server()
             urls = self._report_server.urls()
             self._log(f"改善报告工作台已启动：{urls['local']}")

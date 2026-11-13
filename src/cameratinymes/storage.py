@@ -1300,6 +1300,30 @@ class StorageBase:
         return [str(row[0]) for row in
                 self._fetchall(sql, (camera, cell) + token_args + args + (int(limit),))]
 
+    def range_cell_values(self, camera: str, cell: str,
+                          ts_from: str | None = None, ts_to: str | None = None,
+                          limit: int = 5000) -> list[tuple[str, float | None, int | None]]:
+        """按相机+单元格+时间范围取逐点采样：(ts, value, ok)，升序。
+
+        value 可能为 None（string/bool 单元格或无法解析为数值）；
+        ok 可能为 None（无阈值判定）。硬性 LIMIT 避免前端误操作拉超大数据量。
+        SQLite 与 MariaDB 两端 ts 都是 ISO 字符串，可直接 BETWEEN 比较，
+        两端实现共用基类此方法，底层 _fetchall 在两端子类各自实现。
+        """
+        sql = "SELECT ts, value, ok FROM samples WHERE camera=? AND cell=?"
+        args: list = [camera, cell]
+        if ts_from:
+            sql += " AND ts >= ?"
+            args.append(ts_from)
+        if ts_to:
+            sql += " AND ts <= ?"
+            args.append(ts_to)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        args.append(int(limit))
+        rows = self._fetchall(sql, tuple(args))
+        # 降序取 → 翻成升序给前端直接喂 Chart.js
+        return [(str(r[0]), r[1], r[2]) for r in reversed(rows)]
+
     def range_jobs(self, camera: str,
                    ranges: list[tuple[str, str]] | None) -> list[tuple[str, int]]:
         """该相机在时段内运行过的作业（按记录数降序，用于报告 B 列）。"""
