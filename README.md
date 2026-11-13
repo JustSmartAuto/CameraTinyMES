@@ -435,8 +435,8 @@ MariaDB 驱动使用纯 Python 的 `pymysql`（已列入 `pyproject.toml` 依赖
 
 ```bash
 uv sync                              # 安装依赖
-uv run mes                           # 启动应用
-uv run mes --simulate                # 启动内置模拟相机离线体验完整流程
+uv run camera-tiny-mes               # 启动应用
+uv run camera-tiny-mes --simulate    # 启动内置模拟相机离线体验完整流程
 uv run python build_exe.py           # PyInstaller 打包 dist/CameraTinyMES_{yyyyMMddHHmmss}.exe
 ```
 

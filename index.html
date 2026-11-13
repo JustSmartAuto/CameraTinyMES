@@ -126,6 +126,7 @@
   <div class="deskbar-item"><a href="#readme-av1">AV1 帧序列压缩</a></div>
   <div class="deskbar-item"><a href="#readme-label">误判标注</a></div>
   <div class="deskbar-item"><a href="#readme-report">当日改善分析报告</a></div>
+  <div class="deskbar-item"><a href="#readme-monitor">数据监控 Web</a></div>
   <div class="deskbar-item"><a href="#readme-roadmap">路线图（未完成规划）</a></div>
   <div class="deskbar-item"><a href="#dbreport">数据库分析报告</a></div>
   <div class="deskbar-item"><a href="#dbreport-design">设计特点分析</a></div>
@@ -174,8 +175,10 @@
       </li>
       <li><strong>多相机并发</strong>：可同时连接 / 混用多台智能相机与 GigE 工业相机，单相机掉线自动重连，不影响其他相机</li>
       <li><strong>多单元格订阅</strong>：支持按结果事件（<code>resultChanged</code>）触发或定时轮询（<code>poll_interval</code>）</li>
-      <li><strong>单元格数据类型</strong>：<code>auto / int / float / string / bool / other</code></li>
+      <li><strong>单元格数据类型</strong>：<code>auto / int / float / string / bool / other / image / pointcloud</code>，未知类型可用 <code>auto</code>（按值推断）</li>
+      <li><strong>点云单元格（<code>pointcloud</code>）</strong>：3D 相机（如 OP20-55）点云单元格值为占位标记 <code>❒PointCloud</code>，软件从 <code>acqPointCloudView</code> 下载 CPCD（<code>image/x-cpcd</code>）原样入库（<code>images.kind='pointcloud'</code>），不参与 AV1 打包与阈值判定</li>
       <li><strong>阈值判定</strong>：advanced 记录模式 + 数值类型时按上下限判定 OK/NG；simple 模式仅记录数据、不判定</li>
+      <li><strong>报表单元格用途</strong>（每台相机独立配置，不要求都叫 C11 / A0）：单元格用途可设为自动 / 普通数据 / 判定结果 / 报告图片；判定结果单元格可自定义通过值与不通过值（默认 OK / NG，多个值用 / 分隔），报告图片单元格决定 NG 证据图与 OK 参考图取自哪一列</li>
     </ul>
     <h3>MES 功能（本项目新增）</h3>
     <ul>
@@ -384,7 +387,7 @@
     <table>
       <tr><th>配置项</th><th>说明</th><th>默认值</th></tr>
       <tr><td><code>pdf_engine</code></td><td><code>reportlab</code> / <code>com</code></td><td><code>reportlab</code></td></tr>
-      <tr><td><code>ng_images_per_station</code></td><td>每工站 NG 图上限（1~8）</td><td><code>6</code></td></tr>
+      <tr><td><code>ng_images_per_station</code></td><td>每工站图片上限（1~100，含 NG 与误判 OK）</td><td><code>100</code></td></tr>
       <tr><td><code>image_max_edge</code></td><td>嵌入图片长边上限（px，200~2000）</td><td><code>800</code></td></tr>
       <tr><td><code>reviewer</code></td><td>默认编制人 / 审核人</td><td>空</td></tr>
       <tr><td><code>op_aggregate</code></td><td>数量聚合方式 <code>median</code> / <code>max</code> / <code>first</code></td><td><code>median</code></td></tr>
@@ -393,10 +396,37 @@
 
     <h2>开发 / 运行</h2>
     <pre><code>uv sync                              # 安装依赖
-uv run mes                           # 启动应用
-uv run mes --simulate                # 启动内置模拟相机离线体验完整流程
-uv run python build_exe.py           # PyInstaller 打包 dist/exe_{yyyyMMddHHmmss}.exe</code></pre>
+uv run camera-tiny-mes               # 启动应用
+uv run camera-tiny-mes --simulate    # 启动内置模拟相机离线体验完整流程
+uv run python build_exe.py           # PyInstaller 打包 dist/CameraTinyMES_{yyyyMMddHHmmss}.exe</code></pre>
     <p>应用启动时会自动拉起改善报告 Web 工作台：本机访问 <code>http://127.0.0.1:18110/report</code>，其他工控机访问 <code>http://&lt;本机IP&gt;:18110/report</code>。端口被占用时实际端口写入 <code>settings.json</code> 的 <code>web_port</code>，也可在「系统 → 设置 → 改善报告工作台」修改监听地址 / 端口 / 口令。</p>
+
+    <h2 id="readme-monitor">数据监控 Web（已实现 v1.0）</h2>
+    <p>2026-11-13 交付。Web 工作台顶部新增"数据监控"页签，完整覆盖 Tkinter 主界面的实时采集能力：</p>
+    <table>
+      <tr><th>能力</th><th>说明</th></tr>
+      <tr><td>多相机宫格面板</td><td>每卡显示相机连接状态、配方名、各单元格实时值（WebSocket 推送 ≤100ms）</td></tr>
+      <tr><td>迷你折线图</td><td>每数值单元格内嵌 Chart.js 迷你折线（红段=超差），数据来自 LiveCache 最近 200 点</td></tr>
+      <tr><td>历史趋势对话框</td><td>单元格名旁 📈 按钮 → 时间范围选择 → Chart.js 折线（红段超差 + 虚线阈值基线）</td></tr>
+      <tr><td>DB / AV1 状态</td><td>顶部状态栏实时显示数据库健康、AV1 压缩进度（HTTP 轮询 5s）</td></tr>
+      <tr><td>WS 连接状态</td><td>顶部指示灯：绿=已连接，红=重连中（指数退避 500ms→30s），灰=独立进程降级</td></tr>
+      <tr><td>实时日志</td><td>底部暗底滚动尾日志，最多 200 条</td></tr>
+      <tr><td>相机 CRUD</td><td>Web 端添加/编辑/删除相机 → 乐观锁（<code>CameraConfig.updated_at</code>）→ <code>save_config</code> → <code>MonitorApp.reload_config</code> 热重载 → Worker diff stop/start</td></tr>
+      <tr><td>远程控制</td><td>连接全部 / 断开全部 / 单相机连接断开（仅本机可调用）</td></tr>
+      <tr><td>相机级 xlsx 导出</td><td>复用后台任务队列，与 Tkinter 面板导出同源</td></tr>
+    </table>
+    <h3>实时数据通路</h3>
+    <pre><code>Worker (asyncio) → Monitor.push() 扇出多订阅者 queue (maxsize=1000)
+                    ├→ Tkinter 主界面 poll
+                    └→ Web 订阅者 poll → LiveCache 更新 → WebSocket 帧推所有浏览器
+浏览器 WS 握手 → 立即推 LiveCache 快照（history 消息）→ 上线即有数据可看</code></pre>
+    <h3>安全矩阵</h3>
+    <ul>
+      <li><strong>GET /api/monitor/* 全部开放</strong>（数据库状态、相机配置、历史采样、实时 WS）</li>
+      <li><strong>POST/PUT/PATCH/DELETE</strong> 需 Origin（本机/局域网 IP）或空 Origin + <code>X-CTM-Token</code></li>
+      <li><strong>连接/断开/导出/删除数据</strong> 叠加 <code>_require_local</code>（仅本机回环地址可调用）</li>
+      <li>WebSocket <code>/ws</code> 握手复用 token 校验，空 Origin + 合法 Cookie 放行</li>
+    </ul>
 
     <h2 id="readme-roadmap">路线图（未完成规划）</h2>
     <h3>报告功能现场验证</h3>

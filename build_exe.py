@@ -1,4 +1,4 @@
-"""PyInstaller 打包：单文件 exe，命名 exe_{yyyyMMddHHmmss}。
+"""PyInstaller 打包：单文件 exe，命名 CameraTinyMES_{yyyyMMddHHmmss}。
 
 用法：uv run python build_exe.py
 """
